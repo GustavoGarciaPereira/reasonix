@@ -171,9 +171,7 @@ function StreamingAssistant({ event }: { event: DisplayEvent }) {
             </Text>
             <Elapsed />
           </Box>
-          <Text dimColor>
-            {"  "}spread across T=0.0/0.5/1.0 · typical wait 30-90s for reasoner
-          </Text>
+          <Text dimColor>{"  "}spread across T=0.0/0.5/1.0 · typical wait 30-90s for reasoner</Text>
         </Box>
       );
     }
