@@ -13,16 +13,25 @@
  * report.md.
  */
 
-import { writeFileSync } from "node:fs";
+import { type WriteStream, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   CacheFirstLoop,
   DeepSeekClient,
   ImmutablePrefix,
   ToolRegistry,
+  Usage,
   claudeEquivalentCost,
+  costUsd,
   loadDotenv,
 } from "../../src/index.js";
+import {
+  openTranscriptFile,
+  recordFromLoopEvent,
+  type TranscriptRecord,
+  writeRecord,
+} from "../../src/transcript.js";
 import { BaselineAgent } from "./baseline.js";
 import { cloneDb } from "./db.js";
 import { TASKS } from "./tasks.js";
@@ -38,6 +47,7 @@ interface CliArgs {
   model: string;
   userSimModel: string;
   outPath: string | null;
+  transcriptsDir: string | null;
   dry: boolean;
   verbose: boolean;
 }
@@ -50,6 +60,7 @@ function parseArgs(argv: string[]): CliArgs {
     model: "deepseek-chat",
     userSimModel: "deepseek-chat",
     outPath: null,
+    transcriptsDir: null,
     dry: false,
     verbose: false,
   };
@@ -63,6 +74,7 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a === "--model") out.model = argv[++i] ?? out.model;
     else if (a === "--user-model") out.userSimModel = argv[++i] ?? out.userSimModel;
     else if (a === "--out") out.outPath = argv[++i] ?? null;
+    else if (a === "--transcripts-dir") out.transcriptsDir = argv[++i] ?? null;
     else if (a === "--dry") out.dry = true;
     else if (a === "--verbose" || a === "-v") out.verbose = true;
   }
@@ -77,6 +89,8 @@ interface RunContext {
   db: WorldState;
   transcript: Turn[];
   args: CliArgs;
+  /** Open transcript stream, or null if --transcripts-dir was not set. */
+  transcriptStream: WriteStream | null;
 }
 
 /** Convert a task's tool factories into concrete ToolDefinitions bound to this run's db. */
@@ -85,7 +99,7 @@ function buildTools(task: TaskDefinition, db: WorldState) {
 }
 
 async function runReasonix(ctx: RunContext): Promise<RunResult> {
-  const { client, task, db, args } = ctx;
+  const { client, task, db, args, transcriptStream } = ctx;
   const tools = buildTools(task, db);
   const registry = new ToolRegistry();
   for (const t of tools) registry.register(t);
@@ -101,11 +115,15 @@ async function runReasonix(ctx: RunContext): Promise<RunResult> {
     model: args.model,
     stream: false,
   });
+  const prefixHash = prefix.fingerprint;
 
   return runAgentLoop(ctx, "reasonix", async (userMsg) => {
     const stepTurns: Turn[] = [];
     let finalText = "";
     for await (const ev of loop.step(userMsg)) {
+      if (transcriptStream && ev.role !== "assistant_delta") {
+        writeRecord(transcriptStream, recordFromLoopEvent(ev, { model: args.model, prefixHash }));
+      }
       if (ev.role === "tool") {
         stepTurns.push({ role: "tool", content: ev.content, toolName: ev.toolName });
       } else if (ev.role === "assistant_final") {
@@ -130,7 +148,7 @@ async function runReasonix(ctx: RunContext): Promise<RunResult> {
 }
 
 async function runBaseline(ctx: RunContext): Promise<RunResult> {
-  const { client, task, db, args } = ctx;
+  const { client, task, db, args, transcriptStream } = ctx;
   const tools = buildTools(task, db);
   const agent = new BaselineAgent({
     client,
@@ -141,6 +159,45 @@ async function runBaseline(ctx: RunContext): Promise<RunResult> {
 
   return runAgentLoop(ctx, "baseline", async (userMsg, transcript) => {
     const res = await agent.userTurn(userMsg, transcript);
+
+    // Synthesize TranscriptRecords for the baseline turn. Unlike Reasonix
+    // (LoopEvent stream), baseline doesn't emit events — we reconstruct:
+    //   - one "tool" record per executed tool call, with args
+    //   - one "assistant_final" record with summed usage across all sub-calls
+    //     the baseline made for this user turn
+    if (transcriptStream) {
+      const ts = new Date().toISOString();
+      for (const te of res.toolCallsExecuted) {
+        const rec: TranscriptRecord = {
+          ts,
+          turn: res.turnNo,
+          role: "tool",
+          content: te.result,
+          tool: te.name,
+          args: te.args,
+        };
+        writeRecord(transcriptStream, rec);
+      }
+      const turnUsage = aggregateBaselineTurnUsage(agent, res.turnNo);
+      const rec: TranscriptRecord = {
+        ts,
+        turn: res.turnNo,
+        role: "assistant_final",
+        content: res.assistantMessage,
+        usage: {
+          prompt_tokens: turnUsage.promptTokens,
+          completion_tokens: turnUsage.completionTokens,
+          total_tokens: turnUsage.totalTokens,
+          prompt_cache_hit_tokens: turnUsage.promptCacheHitTokens,
+          prompt_cache_miss_tokens: turnUsage.promptCacheMissTokens,
+        },
+        cost: costUsd(args.model, turnUsage),
+        model: args.model,
+        // No prefixHash: baseline's prefix churns by design.
+      };
+      writeRecord(transcriptStream, rec);
+    }
+
     return {
       assistantMessage: res.assistantMessage,
       toolEvents: res.toolCallsExecuted.map(
@@ -153,6 +210,19 @@ async function runBaseline(ctx: RunContext): Promise<RunResult> {
       completionTokens: sumTokens(agent.stats.turns.map((t) => t.usage.completionTokens)),
     };
   });
+}
+
+function aggregateBaselineTurnUsage(agent: BaselineAgent, turnNo: number): Usage {
+  const u = new Usage();
+  for (const t of agent.stats.turns) {
+    if (t.turn !== turnNo) continue;
+    u.promptTokens += t.usage.promptTokens;
+    u.completionTokens += t.usage.completionTokens;
+    u.totalTokens += t.usage.totalTokens;
+    u.promptCacheHitTokens += t.usage.promptCacheHitTokens;
+    u.promptCacheMissTokens += t.usage.promptCacheMissTokens;
+  }
+  return u;
 }
 
 interface AgentTurnOutput {
@@ -170,7 +240,7 @@ async function runAgentLoop(
   mode: RunMode,
   userTurnFn: (userMsg: string, transcript: Turn[]) => Promise<AgentTurnOutput>,
 ): Promise<RunResult> {
-  const { client, task, db, transcript, args } = ctx;
+  const { client, task, db, transcript, args, transcriptStream } = ctx;
   const sim = new UserSimulator(client, task.user, {
     model: args.userSimModel,
     temperature: 0.1,
@@ -189,6 +259,14 @@ async function runAgentLoop(
       const userMsg = await sim.next(transcript);
       if (userMsg === null) break;
       transcript.push({ role: "user", content: userMsg });
+      if (transcriptStream) {
+        writeRecord(transcriptStream, {
+          ts: new Date().toISOString(),
+          turn: turns + 1,
+          role: "user",
+          content: userMsg,
+        });
+      }
       if (args.verbose) console.log(`  [${mode}] USER: ${userMsg}`);
 
       const out = await userTurnFn(userMsg, transcript);
@@ -331,16 +409,40 @@ async function main(): Promise<void> {
   const client = new DeepSeekClient();
   const tasks = filterTasks(args.taskFilter);
 
+  if (args.transcriptsDir) {
+    mkdirSync(args.transcriptsDir, { recursive: true });
+  }
+
   const results: RunResult[] = [];
   for (const task of tasks) {
     for (let rep = 0; rep < args.repeats; rep++) {
       for (const mode of args.modes) {
         const db = cloneDb(task.initialDb);
         const transcript: Turn[] = [];
-        const ctx: RunContext = { client, task, db, transcript, args };
+
+        let transcriptStream: WriteStream | null = null;
+        if (args.transcriptsDir) {
+          const fname = `${task.id}.${mode}.r${rep + 1}.jsonl`;
+          transcriptStream = openTranscriptFile(join(args.transcriptsDir, fname), {
+            version: 1,
+            source: `bench/${mode}`,
+            model: args.model,
+            task: task.id,
+            mode,
+            repeat: rep + 1,
+            startedAt: new Date().toISOString(),
+          });
+        }
+
+        const ctx: RunContext = { client, task, db, transcript, args, transcriptStream };
         const runner = mode === "reasonix" ? runReasonix : runBaseline;
         const started = Date.now();
-        const result = await runner(ctx);
+        let result: RunResult;
+        try {
+          result = await runner(ctx);
+        } finally {
+          transcriptStream?.end();
+        }
         const elapsed = ((Date.now() - started) / 1000).toFixed(1);
         console.log(
           `[${task.id}/${mode}/r${rep + 1}] pass=${result.pass} turns=${result.turns} ` +

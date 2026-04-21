@@ -58,10 +58,23 @@ npx tsx benchmarks/tau-bench/runner.ts --task t01_address_happy --verbose
 
 # render the report
 npx tsx benchmarks/tau-bench/report.ts benchmarks/tau-bench/results-<date>.json
+
+# emit per-run transcripts so you can reasonix replay / diff them
+npx tsx benchmarks/tau-bench/runner.ts --transcripts-dir ./transcripts
+npx reasonix diff \
+  ./transcripts/t01_address_happy.baseline.r1.jsonl \
+  ./transcripts/t01_address_happy.reasonix.r1.jsonl \
+  --md diff.md
 ```
 
 The runner writes `benchmarks/tau-bench/results-<iso-timestamp>.json`. Point
 `report.ts` at it (or pass `--out report.md` to override the output path).
+
+When `--transcripts-dir <path>` is set, each `(task, mode, repeat)` run also
+writes a `<taskId>.<mode>.r<n>.jsonl` transcript into that directory —
+these carry per-turn `usage`, `cost`, and (for Reasonix) the
+`prefixHash`, so `reasonix replay` and `reasonix diff` can rebuild the
+economics offline.
 
 ## CLI flags
 
@@ -73,6 +86,7 @@ The runner writes `benchmarks/tau-bench/results-<iso-timestamp>.json`. Point
 | `--model <id>` | deepseek-chat | agent model |
 | `--user-model <id>` | deepseek-chat | user-simulator model |
 | `--out <path>` | `results-<ts>.json` | results file path |
+| `--transcripts-dir <path>` | off | write one transcript per run for replay/diff |
 | `--dry` | off | skip the LLM; only wire-check |
 | `--verbose` \| `-v` | off | print every user / agent / tool line |
 

@@ -77,7 +77,9 @@ npx reasonix chat                # auto-saves to session 'default'; resumes next
 npx reasonix chat --session work # use a different named session
 npx reasonix chat --no-session   # ephemeral — nothing persisted
 npx reasonix run "ask anything"  # one-shot, streams to stdout
-npx reasonix stats session.jsonl # read back a saved transcript
+npx reasonix stats session.jsonl # quick summary of a transcript
+npx reasonix replay chat.jsonl   # pretty-print a transcript + rebuild cost/cache offline
+npx reasonix diff a.jsonl b.jsonl --md diff.md   # compare two transcripts: cache/cost delta + first divergence
 ```
 
 Sessions live as JSONL under `~/.reasonix/sessions/<name>.jsonl` — every

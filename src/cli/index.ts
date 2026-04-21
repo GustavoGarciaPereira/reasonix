@@ -1,6 +1,8 @@
 import { Command } from "commander";
 import { VERSION } from "../index.js";
 import { chatCommand } from "./commands/chat.js";
+import { diffCommand } from "./commands/diff.js";
+import { replayCommand } from "./commands/replay.js";
 import { runCommand } from "./commands/run.js";
 import { statsCommand } from "./commands/stats.js";
 import { versionCommand } from "./commands/version.js";
@@ -70,6 +72,31 @@ program
   .description("Summarize a JSONL transcript produced by `reasonix chat --transcript`.")
   .action((transcript: string) => {
     statsCommand({ transcript });
+  });
+
+program
+  .command("replay <transcript>")
+  .description(
+    "Pretty-print a transcript + rebuild its session summary (cost, cache, prefix stability). No API calls.",
+  )
+  .option("--head <n>", "Show only the first N records", (v) => Number.parseInt(v, 10))
+  .option("--tail <n>", "Show only the last N records", (v) => Number.parseInt(v, 10))
+  .action((transcript: string, opts) => {
+    replayCommand({
+      path: transcript,
+      head: Number.isFinite(opts.head) ? opts.head : undefined,
+      tail: Number.isFinite(opts.tail) ? opts.tail : undefined,
+    });
+  });
+
+program
+  .command("diff <a> <b>")
+  .description("Compare two transcripts: aggregate deltas + first divergence.")
+  .option("--md <path>", "Also write a markdown report (blog-ready) to this path")
+  .option("--label-a <label>", "Display label for transcript A (default: filename)")
+  .option("--label-b <label>", "Display label for transcript B (default: filename)")
+  .action((a: string, b: string, opts) => {
+    diffCommand({ a, b, mdPath: opts.md, labelA: opts.labelA, labelB: opts.labelB });
   });
 
 program.command("version").description("Print Reasonix version.").action(versionCommand);

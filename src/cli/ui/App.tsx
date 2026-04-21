@@ -1,9 +1,10 @@
-import { type WriteStream, createWriteStream } from "node:fs";
+import type { WriteStream } from "node:fs";
 import { Box, Static, Text, useApp } from "ink";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CacheFirstLoop, DeepSeekClient, ImmutablePrefix } from "../../index.js";
 import type { LoopEvent } from "../../loop.js";
 import type { SessionSummary } from "../../telemetry.js";
+import { openTranscriptFile, recordFromLoopEvent, writeRecord } from "../../transcript.js";
 import { type DisplayEvent, EventRow } from "./EventLog.js";
 import { PromptInput } from "./PromptInput.js";
 import { StatsPanel } from "./StatsPanel.js";
@@ -47,7 +48,12 @@ export function App({ model, system, transcript, harvest, branch, session }: App
 
   const transcriptRef = useRef<WriteStream | null>(null);
   if (transcript && !transcriptRef.current) {
-    transcriptRef.current = createWriteStream(transcript, { flags: "a" });
+    transcriptRef.current = openTranscriptFile(transcript, {
+      version: 1,
+      source: "reasonix chat",
+      model,
+      startedAt: new Date().toISOString(),
+    });
   }
   useEffect(() => {
     return () => {
@@ -102,17 +108,14 @@ export function App({ model, system, transcript, harvest, branch, session }: App
 
   const prefixHash = loop.prefix.fingerprint;
 
-  const writeTranscript = useCallback((ev: LoopEvent) => {
-    transcriptRef.current?.write(
-      `${JSON.stringify({
-        ts: new Date().toISOString(),
-        turn: ev.turn,
-        role: ev.role,
-        content: ev.content,
-        tool: ev.toolName,
-      })}\n`,
-    );
-  }, []);
+  const writeTranscript = useCallback(
+    (ev: LoopEvent) => {
+      const stream = transcriptRef.current;
+      if (!stream) return;
+      writeRecord(stream, recordFromLoopEvent(ev, { model, prefixHash }));
+    },
+    [model, prefixHash],
+  );
 
   const handleSubmit = useCallback(
     async (raw: string) => {

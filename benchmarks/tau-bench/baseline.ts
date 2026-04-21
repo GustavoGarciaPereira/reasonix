@@ -39,7 +39,9 @@ export interface BaselineRunnerOptions {
 
 export interface BaselineTurnResult {
   assistantMessage: string;
-  toolCallsExecuted: { name: string; result: string }[];
+  toolCallsExecuted: { name: string; args: string; result: string }[];
+  /** Turn number (1-based) assigned by the agent. Lets callers filter this.stats.turns for per-turn usage. */
+  turnNo: number;
 }
 
 export class BaselineAgent {
@@ -84,7 +86,7 @@ export class BaselineAgent {
 
     this.history.push({ role: "user", content: userMessage });
 
-    const toolExecutions: { name: string; result: string }[] = [];
+    const toolExecutions: { name: string; args: string; result: string }[] = [];
 
     for (let iter = 0; iter < this.maxToolIters; iter++) {
       // Naive pattern #3: always rebuild the full message array.
@@ -102,14 +104,18 @@ export class BaselineAgent {
       this.history.push(assistantMessage);
 
       if (resp.toolCalls.length === 0) {
-        return { assistantMessage: resp.content, toolCallsExecuted: toolExecutions };
+        return {
+          assistantMessage: resp.content,
+          toolCallsExecuted: toolExecutions,
+          turnNo: this.turnNo,
+        };
       }
 
       for (const tc of resp.toolCalls) {
         const name = tc.function?.name ?? "";
         const args = tc.function?.arguments ?? "{}";
         const result = await this.registry.dispatch(name, args);
-        toolExecutions.push({ name, result });
+        toolExecutions.push({ name, args, result });
         this.history.push({
           role: "tool",
           tool_call_id: tc.id ?? "",
@@ -123,6 +129,7 @@ export class BaselineAgent {
     return {
       assistantMessage: lastAssistant?.content ?? "[max_tool_iters reached]",
       toolCallsExecuted: toolExecutions,
+      turnNo: this.turnNo,
     };
   }
 }

@@ -44,6 +44,12 @@ export interface LoopEvent {
   content: string;
   reasoningDelta?: string;
   toolName?: string;
+  /**
+   * Raw JSON-string arguments the model sent for a tool call (role === "tool").
+   * Populated so transcripts can persist *why* a tool was called, not just
+   * what it returned. Needed by `reasonix diff` to explain divergences.
+   */
+  toolArgs?: string;
   stats?: TurnStats;
   planState?: TypedPlanState;
   repair?: RepairReport;
@@ -437,7 +443,13 @@ export class CacheFirstLoop {
           name,
           content: result,
         });
-        yield { turn: this._turn, role: "tool", content: result, toolName: name };
+        yield {
+          turn: this._turn,
+          role: "tool",
+          content: result,
+          toolName: name,
+          toolArgs: args,
+        };
       }
     }
 

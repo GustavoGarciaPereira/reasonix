@@ -64,6 +64,27 @@ export type { SessionInfo } from "./session.js";
 
 export { loadDotenv } from "./env.js";
 
+export {
+  openTranscriptFile,
+  parseTranscript,
+  readTranscript,
+  recordFromLoopEvent,
+  writeMeta,
+  writeRecord,
+} from "./transcript.js";
+export type { TranscriptRecord, TranscriptMeta, ReadTranscriptResult } from "./transcript.js";
+
+export { computeReplayStats, replayFromFile } from "./replay.js";
+export type { ReplayStats } from "./replay.js";
+
+export {
+  diffTranscripts,
+  renderMarkdown as renderDiffMarkdown,
+  renderSummaryTable as renderDiffSummary,
+  similarity,
+} from "./diff.js";
+export type { DiffReport, DiffSide, TurnPair, RenderOptions as DiffRenderOptions } from "./diff.js";
+
 export { fetchWithRetry } from "./retry.js";
 export type { RetryOptions, RetryInfo } from "./retry.js";
 
