@@ -60,22 +60,29 @@ npx reasonix stats session.jsonl # read back a saved transcript
 
 ### Inside the chat — slash commands
 
+A command strip runs under the input box so you don't have to memorize
+anything. Type `/help` for the full list. The biggest shortcut:
+
 ```
-/help                    list all commands
-/status                  show model / harvest / branch / stream state
-/model deepseek-reasoner switch to R1 for thinking-heavy tasks
-/model deepseek-chat     switch back
-/harvest on              Pillar 2: parse R1 reasoning into typed plan state
-/harvest off             disable (saves one cheap V3 call per turn)
-/branch 3                run 3 parallel samples per turn, pick most confident
-/branch off              disable branching
-/clear                   clear displayed history (log is kept)
-/exit                    quit
+/preset fast     deepseek-chat, no harvest, no branch        (default)
+/preset smart    reasoner + harvest                           (~10x cost)
+/preset max      reasoner + harvest + branch 3                (~30x cost, slowest)
 ```
 
-The header updates live: you'll see `harvest · branch3` appear next to the
-model name once you turn those on. `turns N · type /help` is always in the
-top-right corner.
+One-tap switch between fast daily driver, careful thinker, and max-quality
+self-consistency. Individual knobs are available too:
+
+```
+/status          show current model / harvest / branch / stream
+/model <id>      deepseek-chat or deepseek-reasoner
+/harvest [on|off] Pillar 2 — parse R1 reasoning into typed plan state
+/branch <N|off>  run N parallel samples per turn, pick most confident
+/clear           clear displayed history (log is kept)
+/exit            quit
+```
+
+The top panel shows active flags live: `· harvest · branch3` appear next to
+the model once enabled.
 
 ### Flags (for automation / CI)
 

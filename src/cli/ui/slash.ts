@@ -35,11 +35,17 @@ export function handleSlash(cmd: string, args: string[], loop: CacheFirstLoop): 
           "Commands:",
           "  /help                    this message",
           "  /status                  show current settings",
+          "  /preset <fast|smart|max> one-tap presets — see below",
           "  /model <id>              deepseek-chat or deepseek-reasoner",
           "  /harvest [on|off]        Pillar 2: structured plan-state extraction",
           "  /branch <N|off>          run N parallel samples (N>=2), pick most confident",
           "  /clear                   clear displayed history (log is kept)",
           "  /exit                    quit",
+          "",
+          "Presets:",
+          "  fast   deepseek-chat   no harvest  no branch    ~1¢/100turns  ← default",
+          "  smart  reasoner        harvest                  ~10x cost, slower",
+          "  max    reasoner        harvest     branch 3     ~30x cost, slowest",
         ].join("\n"),
       };
 
@@ -66,6 +72,25 @@ export function handleSlash(cmd: string, args: string[], loop: CacheFirstLoop): 
       const on = arg === "" ? !loop.harvestEnabled : arg === "on" || arg === "true" || arg === "1";
       loop.configure({ harvest: on });
       return { info: `harvest → ${loop.harvestEnabled ? "on" : "off"}` };
+    }
+
+    case "preset": {
+      const name = (args[0] ?? "").toLowerCase();
+      if (name === "fast" || name === "default") {
+        loop.configure({ model: "deepseek-chat", harvest: false, branch: 1 });
+        return { info: "preset → fast  (deepseek-chat, no harvest, no branch)" };
+      }
+      if (name === "smart") {
+        loop.configure({ model: "deepseek-reasoner", harvest: true, branch: 1 });
+        return { info: "preset → smart  (reasoner + harvest, ~10x cost vs fast)" };
+      }
+      if (name === "max" || name === "best") {
+        loop.configure({ model: "deepseek-reasoner", harvest: true, branch: 3 });
+        return {
+          info: "preset → max  (reasoner + harvest + branch3, ~30x cost vs fast, slowest)",
+        };
+      }
+      return { info: "usage: /preset <fast|smart|max>" };
     }
 
     case "branch": {

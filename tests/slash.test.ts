@@ -115,4 +115,44 @@ describe("handleSlash", () => {
     expect(r.unknown).toBe(true);
     expect(r.info).toMatch(/unknown command/);
   });
+
+  it("/preset fast = deepseek-chat, no harvest, no branch", () => {
+    const loop = makeLoop();
+    handleSlash("model", ["deepseek-reasoner"], loop);
+    handleSlash("harvest", ["on"], loop);
+    handleSlash("branch", ["3"], loop);
+    handleSlash("preset", ["fast"], loop);
+    expect(loop.model).toBe("deepseek-chat");
+    expect(loop.harvestEnabled).toBe(false);
+    expect(loop.branchEnabled).toBe(false);
+  });
+
+  it("/preset smart = reasoner + harvest, no branch", () => {
+    const loop = makeLoop();
+    handleSlash("preset", ["smart"], loop);
+    expect(loop.model).toBe("deepseek-reasoner");
+    expect(loop.harvestEnabled).toBe(true);
+    expect(loop.branchEnabled).toBe(false);
+  });
+
+  it("/preset max = reasoner + harvest + branch3", () => {
+    const loop = makeLoop();
+    handleSlash("preset", ["max"], loop);
+    expect(loop.model).toBe("deepseek-reasoner");
+    expect(loop.harvestEnabled).toBe(true);
+    expect(loop.branchOptions.budget).toBe(3);
+  });
+
+  it("/preset with bad name returns usage", () => {
+    const r = handleSlash("preset", ["nonsense"], makeLoop());
+    expect(r.info).toMatch(/usage/);
+  });
+
+  it("/help mentions presets", () => {
+    const r = handleSlash("help", [], makeLoop());
+    expect(r.info).toMatch(/Presets:/);
+    expect(r.info).toMatch(/fast/);
+    expect(r.info).toMatch(/smart/);
+    expect(r.info).toMatch(/max/);
+  });
 });

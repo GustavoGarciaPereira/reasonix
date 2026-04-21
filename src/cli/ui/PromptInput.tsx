@@ -25,7 +25,7 @@ export function PromptInput({
 }: PromptInputProps) {
   const effectivePlaceholder = disabled
     ? (placeholder ?? "…waiting for response…")
-    : (placeholder ?? 'type a message, or "/exit"');
+    : (placeholder ?? "type a message, or /command");
   return (
     <Box borderStyle="round" borderColor={disabled ? "gray" : "cyan"} paddingX={1}>
       <Text bold color={disabled ? "gray" : "cyan"}>

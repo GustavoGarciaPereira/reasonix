@@ -1,5 +1,5 @@
 import { type WriteStream, createWriteStream } from "node:fs";
-import { Box, Static, useApp } from "ink";
+import { Box, Static, Text, useApp } from "ink";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CacheFirstLoop, DeepSeekClient, ImmutablePrefix } from "../../index.js";
 import type { LoopEvent } from "../../loop.js";
@@ -225,6 +225,17 @@ export function App({ model, system, transcript, harvest, branch }: AppProps) {
         </Box>
       ) : null}
       <PromptInput value={input} onChange={setInput} onSubmit={handleSubmit} disabled={busy} />
+      <CommandStrip />
+    </Box>
+  );
+}
+
+function CommandStrip() {
+  return (
+    <Box paddingX={2}>
+      <Text dimColor>
+        /help · /preset {"<fast|smart|max>"} · /model · /harvest · /branch · /clear · /exit
+      </Text>
     </Box>
   );
 }
