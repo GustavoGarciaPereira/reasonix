@@ -1,5 +1,6 @@
 import { Box, Text } from "ink";
 import React from "react";
+import { type TypedPlanState, isPlanStateEmpty } from "../../harvest.js";
 import type { TurnStats } from "../../telemetry.js";
 import { Markdown } from "./markdown.js";
 
@@ -10,6 +11,7 @@ export interface DisplayEvent {
   role: DisplayRole;
   text: string;
   reasoning?: string;
+  planState?: TypedPlanState;
   toolName?: string;
   stats?: TurnStats;
   repair?: string;
@@ -37,6 +39,9 @@ export const EventRow = React.memo(function EventRow({ event }: { event: Display
           </Text>
         </Box>
         {event.reasoning ? <ReasoningBlock reasoning={event.reasoning} /> : null}
+        {!isPlanStateEmpty(event.planState) ? (
+          <PlanStateBlock planState={event.planState!} />
+        ) : null}
         {event.text ? <Markdown text={event.text} /> : <Text dimColor>(no content)</Text>}
         {event.stats ? <StatsLine stats={event.stats} /> : null}
         {event.repair ? <Text color="magenta">{event.repair}</Text> : null}
@@ -74,6 +79,25 @@ export const EventRow = React.memo(function EventRow({ event }: { event: Display
     </Box>
   );
 });
+
+function PlanStateBlock({ planState }: { planState: TypedPlanState }) {
+  const lines: Array<[string, string[]]> = [];
+  if (planState.subgoals.length) lines.push(["subgoals", planState.subgoals]);
+  if (planState.hypotheses.length) lines.push(["hypotheses", planState.hypotheses]);
+  if (planState.uncertainties.length) lines.push(["uncertainties", planState.uncertainties]);
+  if (planState.rejectedPaths.length) lines.push(["rejected", planState.rejectedPaths]);
+  return (
+    <Box flexDirection="column" marginBottom={1}>
+      {lines.map(([label, items]) => (
+        <Text key={label} color="magenta">
+          {"‹ "}
+          <Text bold>{label}</Text>
+          {` (${items.length}): ${items.join(" · ")}`}
+        </Text>
+      ))}
+    </Box>
+  );
+}
 
 function ReasoningBlock({ reasoning }: { reasoning: string }) {
   const max = 220;

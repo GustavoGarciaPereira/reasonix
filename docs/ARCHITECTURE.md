@@ -39,7 +39,7 @@ timestamps each turn — cache hit rate in practice: <20%.
 **Metric.** `prompt_cache_hit_tokens / (hit + miss)` exposed per-turn and
 aggregated per-session. This is the user-visible proof of Pillar 1's value.
 
-### Pillar 2 — R1 Thought Harvesting *(v0.2)*
+### Pillar 2 — R1 Thought Harvesting *(v0.0.3, opt-in)*
 
 **Problem.** R1 emits extensive `reasoning_content`. DeepSeek's own docs
 recommend *not* feeding it back to the next turn. Most frameworks display it
@@ -105,8 +105,10 @@ src/
 ## Roadmap
 
 - **v0.0.1** — Pillar 1 end-to-end, Pillar 3 complete, Ink TUI, τ-bench scaffold.
+- **v0.0.2** — First-run key prompt, saved to `~/.reasonix/config.json`.
+- **v0.0.3** — Pillar 2 MVP (opt-in harvest), retry layer, TextInput fix.
 - **v0.1** — τ-bench numbers published, streaming polish, transcript replay.
-- **v0.2** — Pillar 2 MVP; self-consistency branching; budget controls.
+- **v0.2** — Self-consistency / branch-budget sampling driven by plan state.
 - **v0.3** — MCP client, session persistence.
 
 ## Explicit non-goals

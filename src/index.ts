@@ -34,7 +34,7 @@ export type {
 } from "./repair/index.js";
 
 export { harvest, emptyPlanState, isPlanStateEmpty } from "./harvest.js";
-export type { TypedPlanState } from "./harvest.js";
+export type { TypedPlanState, HarvestOptions } from "./harvest.js";
 
 export { loadDotenv } from "./env.js";
 

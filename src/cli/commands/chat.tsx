@@ -9,6 +9,7 @@ export interface ChatOptions {
   model: string;
   system: string;
   transcript?: string;
+  harvest?: boolean;
 }
 
 interface RootProps extends ChatOptions {
@@ -29,7 +30,14 @@ function Root({ initialKey, ...appProps }: RootProps) {
   }
   // Ensure the loop's DeepSeekClient picks up the key when it lazy-instantiates.
   process.env.DEEPSEEK_API_KEY = key;
-  return <App {...appProps} />;
+  return (
+    <App
+      model={appProps.model}
+      system={appProps.system}
+      transcript={appProps.transcript}
+      harvest={appProps.harvest}
+    />
+  );
 }
 
 export async function chatCommand(opts: ChatOptions): Promise<void> {

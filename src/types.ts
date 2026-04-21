@@ -54,4 +54,6 @@ export interface ChatRequestOptions {
   maxTokens?: number;
   stream?: boolean;
   signal?: AbortSignal;
+  /** DeepSeek response_format — use { type: "json_object" } to force valid JSON. */
+  responseFormat?: { type: "json_object" | "text" };
 }

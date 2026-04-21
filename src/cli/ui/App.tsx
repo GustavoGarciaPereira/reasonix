@@ -12,6 +12,7 @@ export interface AppProps {
   model: string;
   system: string;
   transcript?: string;
+  harvest?: boolean;
 }
 
 /**
@@ -27,7 +28,7 @@ interface StreamingState {
   reasoning: string;
 }
 
-export function App({ model, system, transcript }: AppProps) {
+export function App({ model, system, transcript, harvest }: AppProps) {
   const { exit } = useApp();
   const [historical, setHistorical] = useState<DisplayEvent[]>([]);
   const [streaming, setStreaming] = useState<DisplayEvent | null>(null);
@@ -56,10 +57,10 @@ export function App({ model, system, transcript }: AppProps) {
     if (loopRef.current) return loopRef.current;
     const client = new DeepSeekClient();
     const prefix = new ImmutablePrefix({ system });
-    const l = new CacheFirstLoop({ client, prefix, model });
+    const l = new CacheFirstLoop({ client, prefix, model, harvest });
     loopRef.current = l;
     return l;
-  }, [model, system]);
+  }, [model, system, harvest]);
 
   const prefixHash = loop.prefix.fingerprint;
 
@@ -136,6 +137,7 @@ export function App({ model, system, transcript }: AppProps) {
                 role: "assistant",
                 text: ev.content || streamRef.text,
                 reasoning: streamRef.reasoning || undefined,
+                planState: ev.planState,
                 stats: ev.stats,
                 repair: repairNote || undefined,
                 streaming: false,

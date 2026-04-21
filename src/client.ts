@@ -88,6 +88,7 @@ export class DeepSeekClient {
     if (opts.tools?.length) payload.tools = opts.tools;
     if (opts.temperature !== undefined) payload.temperature = opts.temperature;
     if (opts.maxTokens !== undefined) payload.max_tokens = opts.maxTokens;
+    if (opts.responseFormat) payload.response_format = opts.responseFormat;
     return payload;
   }
 

@@ -20,11 +20,16 @@ program
   .option("-m, --model <id>", "DeepSeek model id", "deepseek-chat")
   .option("-s, --system <prompt>", "System prompt (pinned in the immutable prefix)", DEFAULT_SYSTEM)
   .option("--transcript <path>", "Write a JSONL transcript to this path")
+  .option(
+    "--harvest",
+    "Extract typed plan state from R1 reasoning (Pillar 2, adds a cheap V3 call per turn)",
+  )
   .action(async (opts) => {
     await chatCommand({
       model: opts.model,
       system: opts.system,
       transcript: opts.transcript,
+      harvest: !!opts.harvest,
     });
   });
 

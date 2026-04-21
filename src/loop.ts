@@ -1,5 +1,5 @@
 import type { DeepSeekClient } from "./client.js";
-import { type TypedPlanState, harvest } from "./harvest.js";
+import { type HarvestOptions, type TypedPlanState, emptyPlanState, harvest } from "./harvest.js";
 import { AppendOnlyLog, type ImmutablePrefix, VolatileScratch } from "./memory.js";
 import { type RepairReport, ToolCallRepair } from "./repair/index.js";
 import { SessionStats, type TurnStats } from "./telemetry.js";
@@ -27,6 +27,12 @@ export interface CacheFirstLoopOptions {
   model?: string;
   maxToolIters?: number;
   stream?: boolean;
+  /**
+   * Pillar 2 — structured harvesting of R1 reasoning into a typed plan state.
+   * Pass `true` for defaults or an options object. Off by default (adds a
+   * cheap but non-zero V3 call per turn).
+   */
+  harvest?: boolean | HarvestOptions;
 }
 
 /**
@@ -45,6 +51,8 @@ export class CacheFirstLoop {
   readonly model: string;
   readonly maxToolIters: number;
   readonly stream: boolean;
+  readonly harvestEnabled: boolean;
+  readonly harvestOptions: HarvestOptions;
   readonly log = new AppendOnlyLog();
   readonly scratch = new VolatileScratch();
   readonly stats = new SessionStats();
@@ -58,6 +66,10 @@ export class CacheFirstLoop {
     this.model = opts.model ?? "deepseek-chat";
     this.maxToolIters = opts.maxToolIters ?? 8;
     this.stream = opts.stream ?? true;
+    this.harvestEnabled =
+      opts.harvest === true || (typeof opts.harvest === "object" && opts.harvest !== null);
+    this.harvestOptions =
+      typeof opts.harvest === "object" && opts.harvest !== null ? opts.harvest : {};
     const allowedNames = new Set([...this.prefix.toolSpecs.map((s) => s.function.name)]);
     this.repair = new ToolCallRepair({ allowedToolNames: allowedNames });
   }
@@ -157,7 +169,9 @@ export class CacheFirstLoop {
       }
 
       this.scratch.reasoning = reasoningContent || null;
-      const planState = await harvest(reasoningContent || null);
+      const planState = this.harvestEnabled
+        ? await harvest(reasoningContent || null, this.client, this.harvestOptions)
+        : emptyPlanState();
 
       const { calls: repairedCalls, report } = this.repair.process(
         toolCalls,

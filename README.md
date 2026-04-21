@@ -37,9 +37,16 @@ structures the agent loop as `[Immutable Prefix] + [Append-Only Log] +
 
 ### 2. R1 Thought Harvesting
 R1's `reasoning_content` contains a *plan*, not just trivia to display. Reasonix
-parses it into typed plan state (subgoals, hypotheses, uncertainties, rejected
-paths) and feeds that state to the orchestrator — branching decisions are made
-on structured signals, not regex-brittle prompt hacks. *(v0.2)*
+pipes it through a cheap V3 call (~$0.0001 / turn) in JSON mode and extracts
+a typed plan state:
+
+```ts
+{ subgoals: string[], hypotheses: string[], uncertainties: string[], rejectedPaths: string[] }
+```
+
+Opt-in to keep default cost identical: `reasonix chat --harvest` or
+`new CacheFirstLoop({ harvest: true })`. The TUI renders the harvested state
+as a compact magenta block above the answer.
 
 ### 3. Tool-Call Repair
 R1/V3 have known quirks — tool calls leaking into `<think>`, dropped arguments
@@ -93,8 +100,8 @@ reasonix version
 
 ## Status
 
-Pre-alpha. v0.0.1 ships Pillar 1 and Pillar 3 working end-to-end; Pillar 2 is a
-stub with a stable surface. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Pre-alpha. All three pillars ship working end-to-end as of v0.0.3.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Non-goals
 
