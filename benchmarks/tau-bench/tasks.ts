@@ -264,7 +264,8 @@ export const TASKS: TaskDefinition[] = [
   },
   {
     id: "t05_refund_not_delivered",
-    description: "User wants a refund on a processing order. Agent should refuse / defer.",
+    description:
+      "User wants a refund on a processing order. Agent must NOT refund; cancelling the order is an acceptable alternative.",
     systemPrompt: RETAIL_SYSTEM,
     tools: ALL_TOOLS,
     initialDb: retailSeed(),
@@ -273,8 +274,17 @@ export const TASKS: TaskDefinition[] = [
       goal: "Get a refund on order o_1002 right now.",
       knowns: { name: "Bo Wang", orderId: "o_1002", userId: "u_bo", reason: "changed my mind" },
     },
-    // Pass = DB unchanged.
-    check: ({ db }) => db.orders.o_1002?.status === "processing" && !db.refunds.o_1002,
+    // The essential requirement is "no refund on a processing order".
+    // Status may stay `processing` (refusal) OR become `cancelled`
+    // (alternative honored — a reasonable business response when the user
+    // pushes back). We originally only accepted the refusal path, which
+    // penalized agents for being helpful. Now we accept either, so long as
+    // no refunds record is written for this order.
+    check: ({ db }) => {
+      const status = db.orders.o_1002?.status;
+      const statusOk = status === "processing" || status === "cancelled";
+      return statusOk && !db.refunds.o_1002;
+    },
   },
   {
     id: "t06_multi_order_lookup",
