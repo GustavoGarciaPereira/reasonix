@@ -37,3 +37,9 @@ jobs:
 
       - name: Build (tsup)
         run: npm run build
+
+      # Smoke-test the bench harness itself. --dry skips all LLM calls, so
+      # this catches wiring regressions (task factories, CLI parsing, file
+      # IO) without needing a DEEPSEEK_API_KEY in CI.
+      - name: Bench harness dry-run
+        run: npx tsx benchmarks/tau-bench/runner.ts --dry --out /tmp/bench-dry.json
