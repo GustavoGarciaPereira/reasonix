@@ -63,8 +63,25 @@ program
   .description("Run a single task non-interactively, streaming output.")
   .option("-m, --model <id>", "DeepSeek model id", "deepseek-chat")
   .option("-s, --system <prompt>", "System prompt", DEFAULT_SYSTEM)
+  .option(
+    "--harvest",
+    "Extract typed plan state from R1 reasoning (Pillar 2, adds a cheap V3 call per turn)",
+  )
+  .option(
+    "--branch <n>",
+    "Self-consistency: run N parallel samples per turn and pick the most confident",
+    (v) => Number.parseInt(v, 10),
+  )
+  .option("--transcript <path>", "Write a JSONL transcript to this path for replay/diff")
   .action(async (task: string, opts) => {
-    await runCommand({ task, model: opts.model, system: opts.system });
+    await runCommand({
+      task,
+      model: opts.model,
+      system: opts.system,
+      harvest: !!opts.harvest,
+      branch: Number.isFinite(opts.branch) && opts.branch > 1 ? opts.branch : undefined,
+      transcript: opts.transcript,
+    });
   });
 
 program
