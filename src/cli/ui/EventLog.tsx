@@ -28,22 +28,16 @@ export const EventRow = React.memo(function EventRow({ event }: { event: Display
     );
   }
   if (event.role === "assistant") {
+    if (event.streaming) return <StreamingAssistant event={event} />;
     return (
       <Box flexDirection="column" marginTop={1}>
         <Box>
           <Text bold color="green">
-            assistant{" "}
+            assistant
           </Text>
-          {event.streaming ? <Text dimColor>(streaming…)</Text> : null}
         </Box>
         {event.reasoning ? <ReasoningBlock reasoning={event.reasoning} /> : null}
-        {event.streaming ? (
-          <Text>{event.text || <Text dimColor>(thinking…)</Text>}</Text>
-        ) : event.text ? (
-          <Markdown text={event.text} />
-        ) : (
-          <Text dimColor>(no content)</Text>
-        )}
+        {event.text ? <Markdown text={event.text} /> : <Text dimColor>(no content)</Text>}
         {event.stats ? <StatsLine stats={event.stats} /> : null}
         {event.repair ? <Text color="magenta">{event.repair}</Text> : null}
       </Box>
@@ -95,6 +89,47 @@ function ReasoningBlock({ reasoning }: { reasoning: string }) {
       </Text>
     </Box>
   );
+}
+
+/**
+ * Compact progress view rendered while a turn is still streaming. We keep
+ * this to a fixed ~3-line footprint so the dynamic region never scrolls past
+ * the terminal viewport and leaves artifacts in scrollback.
+ */
+function StreamingAssistant({ event }: { event: DisplayEvent }) {
+  const tail = lastLine(event.text, 140);
+  const reasoningTail = event.reasoning ? lastLine(event.reasoning, 120) : "";
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Box>
+        <Text bold color="green">
+          assistant{" "}
+        </Text>
+        <Text dimColor>
+          (streaming · {event.text.length}
+          {event.reasoning ? ` + think ${event.reasoning.length}` : ""} chars)
+        </Text>
+      </Box>
+      {reasoningTail ? (
+        <Text dimColor italic>
+          ↳ thinking: {reasoningTail}
+        </Text>
+      ) : null}
+      {tail ? (
+        <Text dimColor>▸ {tail}</Text>
+      ) : (
+        <Text dimColor italic>
+          {"  (waiting for first token…)"}
+        </Text>
+      )}
+    </Box>
+  );
+}
+
+function lastLine(s: string, maxChars: number): string {
+  const flat = s.replace(/\s+/g, " ").trim();
+  if (!flat) return "";
+  return flat.length <= maxChars ? flat : `…${flat.slice(-maxChars)}`;
 }
 
 function StatsLine({ stats }: { stats: TurnStats }) {
