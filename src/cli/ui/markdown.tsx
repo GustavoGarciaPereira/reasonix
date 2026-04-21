@@ -17,58 +17,117 @@
 import { Box, Text } from "ink";
 import React from "react";
 
+const SUPERSCRIPT: Record<string, string> = {
+  "0": "⁰",
+  "1": "¹",
+  "2": "²",
+  "3": "³",
+  "4": "⁴",
+  "5": "⁵",
+  "6": "⁶",
+  "7": "⁷",
+  "8": "⁸",
+  "9": "⁹",
+  "+": "⁺",
+  "-": "⁻",
+  n: "ⁿ",
+};
+const SUBSCRIPT: Record<string, string> = {
+  "0": "₀",
+  "1": "₁",
+  "2": "₂",
+  "3": "₃",
+  "4": "₄",
+  "5": "₅",
+  "6": "₆",
+  "7": "₇",
+  "8": "₈",
+  "9": "₉",
+  "+": "₊",
+  "-": "₋",
+};
+
+function toSuperscript(s: string): string {
+  let out = "";
+  for (const c of s) out += SUPERSCRIPT[c] ?? c;
+  return out;
+}
+function toSubscript(s: string): string {
+  let out = "";
+  for (const c of s) out += SUBSCRIPT[c] ?? c;
+  return out;
+}
+
 function stripMath(s: string): string {
-  return s
-    .replace(/\\\(\s*/g, "")
-    .replace(/\s*\\\)/g, "")
-    .replace(/\\\[\s*/g, "\n")
-    .replace(/\s*\\\]/g, "\n")
-    .replace(/\\boxed\{([^}]+)\}/g, "【$1】")
-    .replace(/\\sqrt\{([^}]+)\}/g, "√($1)")
-    .replace(/\\frac\{([^}]+)\}\{([^}]+)\}/g, "($1)/($2)")
-    .replace(/\\text\{([^}]+)\}/g, "$1")
-    .replace(/\\cdot/g, "·")
-    .replace(/\\times/g, "×")
-    .replace(/\\div/g, "÷")
-    .replace(/\\pm/g, "±")
-    .replace(/\\mp/g, "∓")
-    .replace(/\\leq/g, "≤")
-    .replace(/\\geq/g, "≥")
-    .replace(/\\neq/g, "≠")
-    .replace(/\\approx/g, "≈")
-    .replace(/\\in\b/g, "∈")
-    .replace(/\\notin\b/g, "∉")
-    .replace(/\\infty/g, "∞")
-    .replace(/\\sum\b/g, "Σ")
-    .replace(/\\prod\b/g, "Π")
-    .replace(/\\int\b/g, "∫")
-    .replace(/\\alpha/g, "α")
-    .replace(/\\beta/g, "β")
-    .replace(/\\gamma/g, "γ")
-    .replace(/\\delta/g, "δ")
-    .replace(/\\theta/g, "θ")
-    .replace(/\\lambda/g, "λ")
-    .replace(/\\mu/g, "μ")
-    .replace(/\\pi/g, "π")
-    .replace(/\\sigma/g, "σ")
-    .replace(/\\phi/g, "φ")
-    .replace(/\\omega/g, "ω")
-    .replace(/\\implies\b/g, "⇒")
-    .replace(/\\iff\b/g, "⇔")
-    .replace(/\\to\b/g, "→")
-    .replace(/\\rightarrow/g, "→")
-    .replace(/\\Rightarrow/g, "⇒")
-    .replace(/\\leftarrow/g, "←")
-    .replace(/\\Leftarrow/g, "⇐")
-    .replace(/\\ldots/g, "…")
-    .replace(/\\cdots/g, "⋯")
-    .replace(/\\quad/g, "  ")
-    .replace(/\\qquad/g, "    ")
-    .replace(/\\,/g, " ")
-    .replace(/\\;/g, " ")
-    .replace(/\\!/g, "")
-    .replace(/\\\\/g, "\n")
-    .replace(/[ \t]{2,}/g, " ");
+  return (
+    s
+      // Delimiters
+      .replace(/\\\(\s*/g, "")
+      .replace(/\s*\\\)/g, "")
+      .replace(/\\\[\s*/g, "\n")
+      .replace(/\s*\\\]/g, "\n")
+      // Fractions — \frac, \dfrac, \tfrac all render as (num)/(den)
+      .replace(/\\[dt]?frac\{([^{}]+)\}\{([^{}]+)\}/g, "($1)/($2)")
+      .replace(/\\binom\{([^{}]+)\}\{([^{}]+)\}/g, "C($1,$2)")
+      .replace(/\\sqrt\{([^{}]+)\}/g, "√($1)")
+      .replace(/\\boxed\{([^{}]+)\}/g, "【$1】")
+      .replace(/\\text\{([^{}]+)\}/g, "$1")
+      .replace(/\\overline\{([^{}]+)\}/g, "$1̄")
+      .replace(/\\hat\{([^{}]+)\}/g, "$1̂")
+      .replace(/\\vec\{([^{}]+)\}/g, "→$1")
+      // Operators & symbols
+      .replace(/\\cdot/g, "·")
+      .replace(/\\times/g, "×")
+      .replace(/\\div/g, "÷")
+      .replace(/\\pm/g, "±")
+      .replace(/\\mp/g, "∓")
+      .replace(/\\leq/g, "≤")
+      .replace(/\\geq/g, "≥")
+      .replace(/\\neq/g, "≠")
+      .replace(/\\approx/g, "≈")
+      .replace(/\\in\b/g, "∈")
+      .replace(/\\notin\b/g, "∉")
+      .replace(/\\infty/g, "∞")
+      .replace(/\\sum\b/g, "Σ")
+      .replace(/\\prod\b/g, "Π")
+      .replace(/\\int\b/g, "∫")
+      // Greek letters
+      .replace(/\\alpha/g, "α")
+      .replace(/\\beta/g, "β")
+      .replace(/\\gamma/g, "γ")
+      .replace(/\\delta/g, "δ")
+      .replace(/\\theta/g, "θ")
+      .replace(/\\lambda/g, "λ")
+      .replace(/\\mu/g, "μ")
+      .replace(/\\pi/g, "π")
+      .replace(/\\sigma/g, "σ")
+      .replace(/\\phi/g, "φ")
+      .replace(/\\omega/g, "ω")
+      // Arrows / logic
+      .replace(/\\implies\b/g, "⇒")
+      .replace(/\\iff\b/g, "⇔")
+      .replace(/\\to\b/g, "→")
+      .replace(/\\rightarrow/g, "→")
+      .replace(/\\Rightarrow/g, "⇒")
+      .replace(/\\leftarrow/g, "←")
+      .replace(/\\Leftarrow/g, "⇐")
+      .replace(/\\ldots/g, "…")
+      .replace(/\\cdots/g, "⋯")
+      // Spacing commands
+      .replace(/\\quad/g, "  ")
+      .replace(/\\qquad/g, "    ")
+      .replace(/\\,/g, " ")
+      .replace(/\\;/g, " ")
+      .replace(/\\!/g, "")
+      .replace(/\\\\/g, "\n")
+      // Superscripts / subscripts — single token or {braced group of [\w+-]}
+      .replace(/\^\{([\w+-]+)\}/g, (_m, g: string) => toSuperscript(g))
+      .replace(/\^([0-9+\-n])/g, (_m, g: string) => toSuperscript(g))
+      .replace(/_\{([\w+-]+)\}/g, (_m, g: string) => toSubscript(g))
+      .replace(/_([0-9+\-])/g, (_m, g: string) => toSubscript(g))
+      // Collapse multiple whitespace introduced by the stripping above.
+      .replace(/[ \t]{2,}/g, " ")
+  );
 }
 
 /** Split a single line into styled segments for bold / italic / inline code. */
