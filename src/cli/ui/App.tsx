@@ -149,6 +149,7 @@ export function App({ model, system, transcript, harvest, branch }: AppProps) {
               role: "assistant",
               text: "",
               streaming: true,
+              branchProgress: ev.branchProgress,
             });
           } else if (ev.role === "branch_progress") {
             // Live-update the streaming slot with per-sample completion info.

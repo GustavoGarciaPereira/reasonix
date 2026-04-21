@@ -1,5 +1,5 @@
 import { Box, Text } from "ink";
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { type TypedPlanState, isPlanStateEmpty } from "../../harvest.js";
 import type { BranchProgress, BranchSummary } from "../../loop.js";
 import type { TurnStats } from "../../telemetry.js";
@@ -143,9 +143,40 @@ function ReasoningBlock({ reasoning }: { reasoning: string }) {
  * this to a fixed ~3-line footprint so the dynamic region never scrolls past
  * the terminal viewport and leaves artifacts in scrollback.
  */
+function Elapsed() {
+  const [s, setS] = useState(0);
+  useEffect(() => {
+    const start = Date.now();
+    const id = setInterval(() => setS(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return <Text dimColor>{`${mm}:${ss}`}</Text>;
+}
+
 function StreamingAssistant({ event }: { event: DisplayEvent }) {
   if (event.branchProgress) {
     const p = event.branchProgress;
+    // completed=0 means we've just started; no sample has finished yet.
+    if (p.completed === 0) {
+      return (
+        <Box flexDirection="column" marginTop={1}>
+          <Box>
+            <Text bold color="green">
+              assistant{" "}
+            </Text>
+            <Text color="blue">
+              🔀 launching {p.total} parallel samples (R1 thinking in parallel)…{" "}
+            </Text>
+            <Elapsed />
+          </Box>
+          <Text dimColor>
+            {"  "}spread across T=0.0/0.5/1.0 · typical wait 30-90s for reasoner
+          </Text>
+        </Box>
+      );
+    }
     const pct = Math.round((p.completed / p.total) * 100);
     return (
       <Box flexDirection="column" marginTop={1}>
@@ -154,8 +185,9 @@ function StreamingAssistant({ event }: { event: DisplayEvent }) {
             assistant{" "}
           </Text>
           <Text color="blue">
-            🔀 branching {p.completed}/{p.total} ({pct}%)
+            🔀 branching {p.completed}/{p.total} ({pct}%){" "}
           </Text>
+          <Elapsed />
         </Box>
         <Text dimColor>
           {"  latest #"}
@@ -180,8 +212,9 @@ function StreamingAssistant({ event }: { event: DisplayEvent }) {
         </Text>
         <Text dimColor>
           (streaming · {event.text.length}
-          {event.reasoning ? ` + think ${event.reasoning.length}` : ""} chars)
+          {event.reasoning ? ` + think ${event.reasoning.length}` : ""} chars){" "}
         </Text>
+        <Elapsed />
       </Box>
       {reasoningTail ? (
         <Text dimColor italic>

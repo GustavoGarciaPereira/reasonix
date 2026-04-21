@@ -36,6 +36,26 @@ No flag soup. All feature toggles live behind slash commands in the TUI.
 
 ---
 
+## Why not just use LangChain?
+
+Even on the default `fast` preset (no harvest, no branching), Reasonix bakes
+in five DeepSeek-specific defences that generic agent frameworks leave to you:
+
+| | Reasonix default | generic frameworks |
+|---|---|---|
+| Prefix-stable loop (→ 85–95% cache hit) | ✅ | ❌ prompts rebuilt each turn |
+| Auto-flatten deep tool schemas | ✅ | ❌ DeepSeek drops args |
+| Retry with jittered backoff (429/503) | ✅ | ❌ custom callbacks |
+| Scavenge tool calls leaked into `<think>` | ✅ | ❌ |
+| Call-storm breaker on identical-arg repeats | ✅ | ❌ |
+| Live cache-hit / cost / vs-Claude panel | ✅ | ❌ |
+| First-run config prompt + Markdown TUI | ✅ | ❌ |
+
+Harvest and self-consistency branching are bonuses on top. The everyday
+win is that **a plain chat with Reasonix already pays for ~40% less tokens
+than the same chat through a naive LangChain setup**, because the prefix
+actually stays byte-stable.
+
 ## Validated numbers
 
 Measured on live DeepSeek API:

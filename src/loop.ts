@@ -210,7 +210,18 @@ export class CacheFirstLoop {
       try {
         if (this.branchEnabled) {
           const budget = this.branchOptions.budget ?? 1;
-          yield { turn: this._turn, role: "branch_start", content: "" };
+          yield {
+            turn: this._turn,
+            role: "branch_start",
+            content: "",
+            branchProgress: {
+              completed: 0,
+              total: budget,
+              latestIndex: -1,
+              latestTemperature: -1,
+              latestUncertainties: -1,
+            },
+          };
 
           // Queue samples as they complete so we can yield progress events
           // in resolution order (not launch order).
