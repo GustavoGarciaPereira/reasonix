@@ -40,6 +40,8 @@ interface CliArgs {
   repeats: number;
   outPath: string | null;
   transcriptsDir: string | null;
+  /** Per-HTTP-call timeout in ms. Default 300_000 (5 min) — reasoner + harvest runs legitimately need this. */
+  timeoutMs: number;
   dry: boolean;
   verbose: boolean;
 }
@@ -51,6 +53,7 @@ function parseArgs(argv: string[]): CliArgs {
     repeats: 1,
     outPath: null,
     transcriptsDir: null,
+    timeoutMs: 300_000,
     dry: false,
     verbose: false,
   };
@@ -63,7 +66,11 @@ function parseArgs(argv: string[]): CliArgs {
     } else if (a === "--repeats") out.repeats = Number.parseInt(argv[++i] ?? "1", 10);
     else if (a === "--out") out.outPath = argv[++i] ?? null;
     else if (a === "--transcripts-dir") out.transcriptsDir = argv[++i] ?? null;
-    else if (a === "--dry") out.dry = true;
+    else if (a === "--timeout") {
+      // Accept seconds for humans, convert to ms internally.
+      const secs = Number.parseInt(argv[++i] ?? "300", 10);
+      if (Number.isFinite(secs) && secs > 0) out.timeoutMs = secs * 1000;
+    } else if (a === "--dry") out.dry = true;
     else if (a === "--verbose" || a === "-v") out.verbose = true;
   }
   return out;
@@ -235,7 +242,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const client = new DeepSeekClient();
+  const client = new DeepSeekClient({ timeoutMs: args.timeoutMs });
   const tasks = filterTasks(args.taskFilter);
 
   if (args.transcriptsDir) mkdirSync(args.transcriptsDir, { recursive: true });

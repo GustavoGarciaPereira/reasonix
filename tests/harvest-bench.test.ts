@@ -103,9 +103,59 @@ describe("harvest-bench: three_hats checker", () => {
   });
 });
 
+describe("harvest-bench: pseudoprime_base2 checker", () => {
+  const task = taskById("pseudoprime_base2");
+
+  it("passes on 341", () => {
+    expect(task.check("Reasoning... Answer: 341").verdict).toBe("pass");
+  });
+
+  it("fails on 561 (common V3 wrong answer — Carmichael)", () => {
+    const r = task.check("Answer: 561");
+    expect(r.verdict).toBe("fail");
+    expect(r.note).toMatch(/got 561/);
+  });
+
+  it("passes when answer is wrapped in LaTeX", () => {
+    expect(task.check("Answer: $341$ (= 11 \\cdot 31)").verdict).toBe("pass");
+  });
+});
+
+describe("harvest-bench: derangements_d7 checker", () => {
+  const task = taskById("derangements_d7");
+
+  it("passes on 1854", () => {
+    expect(task.check("Answer: 1854").verdict).toBe("pass");
+  });
+
+  it("fails on 265 (D_6) — common off-by-one", () => {
+    expect(task.check("Answer: 265").verdict).toBe("fail");
+  });
+
+  it("fails on 1855 (off by one)", () => {
+    expect(task.check("Answer: 1855").verdict).toBe("fail");
+  });
+});
+
+describe("harvest-bench: euler_quadratic_break checker", () => {
+  const task = taskById("euler_quadratic_break");
+
+  it("passes on 40", () => {
+    expect(task.check("Answer: 40").verdict).toBe("pass");
+  });
+
+  it("fails on 41 (the off-by-one trap from n²-n+41)", () => {
+    expect(task.check("Answer: 41").verdict).toBe("fail");
+  });
+
+  it("fails when agent gives f(40) instead of n=40", () => {
+    expect(task.check("Answer: 1681").verdict).toBe("fail");
+  });
+});
+
 describe("task set invariants", () => {
-  it("exposes at least 3 tasks with unique ids", () => {
-    expect(TASKS.length).toBeGreaterThanOrEqual(3);
+  it("exposes at least 6 tasks (3 easy + 3 hard) with unique ids", () => {
+    expect(TASKS.length).toBeGreaterThanOrEqual(6);
     const ids = new Set(TASKS.map((t) => t.id));
     expect(ids.size).toBe(TASKS.length);
   });

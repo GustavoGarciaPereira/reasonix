@@ -62,6 +62,21 @@ const MOD7_EXPECTED: number[] = (() => {
   return out;
 })();
 
+/**
+ * Single-integer checker. Pulls the first plausible integer from the last
+ * "Answer:" line; compares for exact equality.
+ */
+function checkSingleInt(expected: number) {
+  return (reply: string) => {
+    const answerLine = extractAnswerLine(reply);
+    const nums = extractIntegers(answerLine);
+    if (nums.length === 0) return { verdict: "fail" as const, note: "no number in Answer line" };
+    const n = nums[0]!;
+    if (n === expected) return { verdict: "pass" as const };
+    return { verdict: "fail" as const, note: `got ${n}, expected ${expected}` };
+  };
+}
+
 // ---------- tasks ----------
 
 export const TASKS: HarvestTask[] = [
@@ -120,5 +135,37 @@ export const TASKS: HarvestTask[] = [
       if (/\bblue\b/.test(answerLine)) return { verdict: "fail", note: "answered blue" };
       return { verdict: "fail", note: "no clear color in Answer line" };
     },
+  },
+
+  // ---------- hard tasks (picked for known V3 failure modes) ----------
+
+  {
+    id: "pseudoprime_base2",
+    description:
+      "Number theory — smallest composite n > 1 such that 2^n ≡ 2 (mod n). This is the smallest Fermat pseudoprime to base 2. Answer: 341 (= 11·31). V3 frequently answers 561 (Carmichael / wrong base-2 property) or 9 (not actually a pseudoprime to base 2, verifying the model isn't computing). R1 usually gets this right.",
+    systemPrompt: CONCISE_SYSTEM,
+    prompt:
+      'Find the smallest composite integer n > 1 such that 2^n is congruent to 2 modulo n (i.e., n is a Fermat pseudoprime to base 2). Briefly justify, then give a single integer on a line starting with "Answer:".',
+    check: checkSingleInt(341),
+  },
+
+  {
+    id: "derangements_d7",
+    description:
+      "Combinatorics — number of derangements of 7 elements. Answer: 1854 (D_7 = 7! · (1 − 1/1! + 1/2! − 1/3! + … ± 1/7!) = 5040 · 0.367857… = 1854). V3 sometimes approximates via n!/e and rounds wrong, or confuses with D_6=265 or D_8=14833. R1's explicit recurrence D_n = (n-1)(D_{n-1}+D_{n-2}) avoids the mistake.",
+    systemPrompt: CONCISE_SYSTEM,
+    prompt:
+      'How many permutations of {1, 2, 3, 4, 5, 6, 7} have no fixed points? (This is D_7, the derangement number.) Briefly justify, then give a single integer on a line starting with "Answer:".',
+    check: checkSingleInt(1854),
+  },
+
+  {
+    id: "euler_quadratic_break",
+    description:
+      "Number theory — smallest nonneg integer n where n^2 + n + 41 is NOT prime. Euler's prime-generating polynomial famously produces primes for n = 0..39 and first fails at n = 40 (40²+40+41 = 1681 = 41²). V3 often confuses this with the related n²-n+41 (first fails at 41) or cites the wrong threshold. R1 checks small n systematically.",
+    systemPrompt: CONCISE_SYSTEM,
+    prompt:
+      'Consider the polynomial f(n) = n^2 + n + 41 for n = 0, 1, 2, …. What is the smallest nonneg integer n at which f(n) fails to be prime? Briefly justify (including the value of f(n) at that point), then give just the integer n on a line starting with "Answer:".',
+    check: checkSingleInt(40),
   },
 ];

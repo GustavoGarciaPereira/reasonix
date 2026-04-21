@@ -47,15 +47,20 @@ Deltas:
 # Dry-run — no API, smoke-test the wiring
 npx tsx benchmarks/harvest/runner.ts --dry
 
-# Full run (live DeepSeek, costs ~$0.10-0.30 for 3 tasks × 3 modes × 1 repeat)
+# Full run (live DeepSeek, costs ~$0.20-0.60 for 6 tasks × 3 modes × 1 repeat)
 export DEEPSEEK_API_KEY=sk-...
 npx tsx benchmarks/harvest/runner.ts
 
-# Tighter run with 3 repeats (costs ~$0.30-1.00)
+# Tighter run with 3 repeats (~$0.60-2.00)
 npx tsx benchmarks/harvest/runner.ts --repeats 3
 
-# One task only (iterating on a checker)
-npx tsx benchmarks/harvest/runner.ts --task mod7_list --mode reasoner-harvest
+# Only the hard tasks (skip the easy floor)
+npx tsx benchmarks/harvest/runner.ts --task pseudoprime_base2
+npx tsx benchmarks/harvest/runner.ts --task derangements_d7
+npx tsx benchmarks/harvest/runner.ts --task euler_quadratic_break
+
+# Bump per-call timeout (reasoner + harvest occasionally blow past the 120s default)
+npx tsx benchmarks/harvest/runner.ts --timeout 600
 
 # Per-run transcripts so you can reasonix replay / diff them
 npx tsx benchmarks/harvest/runner.ts --repeats 3 --transcripts-dir transcripts/
@@ -66,11 +71,23 @@ npx tsx benchmarks/harvest/report.ts benchmarks/harvest/results-*.json
 
 ## Tasks (v0.3 seed)
 
+Split into two bands:
+
+**Easy band** — V3 chat solves these, so baseline has a real pass rate and the bench has a reference floor.
+
 | id | shape | why |
 |---|---|---|
 | `mod7_list` | number theory, 29-element list | R1 often tries enumeration first, then reaches for modular arithmetic — clean rejectedPaths signal |
 | `flips_until_3heads` | probability, single integer | classic recurrence; R1 either derives or recalls, harvest should see hypotheses diverge |
 | `three_hats` | logic puzzle, one-word answer | pure deduction chain, tests harvest's ability to extract the nested reasoning |
+
+**Hard band** — picked specifically for known V3 failure modes. If R1 systematically beats V3 on these, and harvest further beats R1-only, we have our Pillar 2 story.
+
+| id | shape | why V3 tends to fail |
+|---|---|---|
+| `pseudoprime_base2` | smallest Fermat pseudoprime to base 2 = **341** | V3 often answers 561 (Carmichael) or some other composite it remembers — R1 actually checks 2^n mod n |
+| `derangements_d7` | D_7 = **1854** | V3 approximates via n!/e and rounds wrong, or recalls D_6/D_8; R1 uses the recurrence D_n=(n−1)(D_{n−1}+D_{n−2}) |
+| `euler_quadratic_break` | smallest n where n²+n+41 is composite = **40** | V3 frequently confuses with n²−n+41 (first fails at 41); R1 checks small n systematically |
 
 Adding a new task: see `tasks.ts`. Any checker that's deterministic is
 fair game — extract numeric/list/text with regex, compare with set
