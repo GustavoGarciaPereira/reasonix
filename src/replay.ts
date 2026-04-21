@@ -13,6 +13,49 @@ import { Usage } from "./client.js";
 import { type SessionSummary, type TurnStats, claudeEquivalentCost, costUsd } from "./telemetry.js";
 import { type ReadTranscriptResult, type TranscriptRecord, readTranscript } from "./transcript.js";
 
+/**
+ * A single turn's worth of records — the unit of navigation in replay TUI.
+ * Records are grouped by their `turn` field, preserving file order within
+ * each group (so tool events interleave with assistant_final events the
+ * way they were actually emitted).
+ */
+export interface TurnPage {
+  turn: number;
+  records: TranscriptRecord[];
+}
+
+/**
+ * Group transcript records into turn-pages. Pages are returned in ascending
+ * turn order. Records without a numeric turn (meta lines, malformed) are
+ * already filtered by the transcript reader, so this sees clean input.
+ */
+export function groupRecordsByTurn(records: TranscriptRecord[]): TurnPage[] {
+  const byTurn = new Map<number, TranscriptRecord[]>();
+  for (const rec of records) {
+    const list = byTurn.get(rec.turn);
+    if (list) list.push(rec);
+    else byTurn.set(rec.turn, [rec]);
+  }
+  return [...byTurn.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([turn, records]) => ({ turn, records }));
+}
+
+/**
+ * Cumulative replay stats up to and including pages[0..upToIdx]. Returns
+ * empty stats if upToIdx < 0. Used by replay TUI's sidebar to show "stats
+ * so far" as the user scrolls through a transcript.
+ */
+export function computeCumulativeStats(pages: TurnPage[], upToIdx: number): ReplayStats {
+  if (upToIdx < 0) return computeReplayStats([]);
+  const flat: TranscriptRecord[] = [];
+  for (let i = 0; i <= upToIdx && i < pages.length; i++) {
+    const records = pages[i]?.records;
+    if (records) flat.push(...records);
+  }
+  return computeReplayStats(flat);
+}
+
 export interface ReplayStats extends SessionSummary {
   /** Per-turn stats, in turn order. Only assistant_final records contribute. */
   perTurn: TurnStats[];

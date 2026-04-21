@@ -77,13 +77,15 @@ program
 program
   .command("replay <transcript>")
   .description(
-    "Pretty-print a transcript + rebuild its session summary (cost, cache, prefix stability). No API calls.",
+    "Interactive Ink TUI to scrub through a transcript + rebuild its session summary (cost, cache, prefix stability). No API calls.",
   )
-  .option("--head <n>", "Show only the first N records", (v) => Number.parseInt(v, 10))
-  .option("--tail <n>", "Show only the last N records", (v) => Number.parseInt(v, 10))
-  .action((transcript: string, opts) => {
-    replayCommand({
+  .option("--print", "Dump to stdout instead of mounting the TUI (auto when piped)")
+  .option("--head <n>", "stdout mode only — show first N records", (v) => Number.parseInt(v, 10))
+  .option("--tail <n>", "stdout mode only — show last N records", (v) => Number.parseInt(v, 10))
+  .action(async (transcript: string, opts) => {
+    await replayCommand({
       path: transcript,
+      print: !!opts.print,
       head: Number.isFinite(opts.head) ? opts.head : undefined,
       tail: Number.isFinite(opts.tail) ? opts.tail : undefined,
     });

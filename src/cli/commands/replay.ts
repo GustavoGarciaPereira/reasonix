@@ -1,21 +1,46 @@
-import { replayFromFile } from "../../replay.js";
+import { render } from "ink";
+import React from "react";
+import { groupRecordsByTurn, replayFromFile } from "../../replay.js";
 import type { TranscriptRecord } from "../../transcript.js";
+import { ReplayApp } from "../ui/ReplayApp.js";
 
 export interface ReplayOptions {
   path: string;
   head?: number;
   tail?: number;
+  /** Force stdout pretty-print mode (no Ink TUI). Also auto-enabled when stdout is not a TTY. */
+  print?: boolean;
 }
 
 /**
- * Non-TUI transcript replay — pretty-prints the records + a summary to stdout.
- * The full Ink TUI replay ships later; this command is enough for `less` +
- * scroll workflows and is what CI / blog tooling will use.
+ * Replay a transcript. Two modes:
+ *   - Interactive TUI (default when stdout is a TTY): Ink-based j/k navigation.
+ *   - Stdout pretty-print (--print, or when stdout is piped): one-shot text
+ *     dump + summary. Kept working so shell pipes, CI logs, and `less`
+ *     workflows still behave sensibly.
  */
-export function replayCommand(opts: ReplayOptions): void {
+export async function replayCommand(opts: ReplayOptions): Promise<void> {
+  const wantPrint =
+    opts.print || !process.stdout.isTTY || opts.head !== undefined || opts.tail !== undefined;
+  if (wantPrint) {
+    printReplay(opts);
+    return;
+  }
+
+  const { parsed } = replayFromFile(opts.path);
+  const pages = groupRecordsByTurn(parsed.records);
+  const { waitUntilExit } = render(React.createElement(ReplayApp, { meta: parsed.meta, pages }), {
+    exitOnCtrlC: true,
+  });
+  await waitUntilExit();
+}
+
+// ----------------------------------------------------------------------------
+// stdout pretty-print path (original behavior, preserved for piping / CI)
+
+function printReplay(opts: ReplayOptions): void {
   const { parsed, stats } = replayFromFile(opts.path);
 
-  // Header: meta line if present
   if (parsed.meta) {
     const m = parsed.meta;
     const bits: string[] = [`source=${m.source}`];

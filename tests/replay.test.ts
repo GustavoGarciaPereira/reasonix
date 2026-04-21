@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeReplayStats } from "../src/replay.js";
+import { computeCumulativeStats, computeReplayStats, groupRecordsByTurn } from "../src/replay.js";
 import type { TranscriptRecord } from "../src/transcript.js";
 
 const mkAssistant = (
@@ -67,5 +67,71 @@ describe("computeReplayStats", () => {
     expect(stats.userTurns).toBe(1);
     expect(stats.totalCostUsd).toBe(0);
     expect(stats.cacheHitRatio).toBe(0);
+  });
+});
+
+describe("groupRecordsByTurn (replay nav)", () => {
+  it("groups records by turn and preserves in-turn order", () => {
+    const recs: TranscriptRecord[] = [
+      { ts: "t", turn: 1, role: "user", content: "q1" },
+      mkAssistant(1, 100, 0, 10, 0),
+      { ts: "t", turn: 1, role: "tool", content: "r", tool: "foo", args: "{}" },
+      { ts: "t", turn: 2, role: "user", content: "q2" },
+      mkAssistant(2, 100, 0, 10, 0),
+    ];
+    const pages = groupRecordsByTurn(recs);
+    expect(pages).toHaveLength(2);
+    expect(pages[0]!.turn).toBe(1);
+    expect(pages[0]!.records).toHaveLength(3);
+    expect(pages[0]!.records[0]!.role).toBe("user");
+    expect(pages[0]!.records[2]!.role).toBe("tool");
+    expect(pages[1]!.turn).toBe(2);
+    expect(pages[1]!.records).toHaveLength(2);
+  });
+
+  it("returns pages sorted by turn even if records appear out of order", () => {
+    const recs: TranscriptRecord[] = [
+      { ts: "t", turn: 3, role: "user", content: "c" },
+      { ts: "t", turn: 1, role: "user", content: "a" },
+      { ts: "t", turn: 2, role: "user", content: "b" },
+    ];
+    const pages = groupRecordsByTurn(recs);
+    expect(pages.map((p) => p.turn)).toEqual([1, 2, 3]);
+  });
+
+  it("handles an empty record list", () => {
+    expect(groupRecordsByTurn([])).toEqual([]);
+  });
+});
+
+describe("computeCumulativeStats (replay nav)", () => {
+  it("grows monotonically as the cursor advances", () => {
+    const pages = groupRecordsByTurn([
+      mkAssistant(1, 100, 900, 10, 0.001),
+      mkAssistant(2, 200, 800, 10, 0.002),
+      mkAssistant(3, 300, 700, 10, 0.003),
+    ]);
+    const s0 = computeCumulativeStats(pages, 0);
+    const s1 = computeCumulativeStats(pages, 1);
+    const s2 = computeCumulativeStats(pages, 2);
+    expect(s0.turns).toBe(1);
+    expect(s1.turns).toBe(2);
+    expect(s2.turns).toBe(3);
+    expect(s0.totalCostUsd).toBeLessThan(s1.totalCostUsd);
+    expect(s1.totalCostUsd).toBeLessThan(s2.totalCostUsd);
+  });
+
+  it("returns empty stats for upToIdx < 0", () => {
+    const pages = groupRecordsByTurn([mkAssistant(1, 100, 900, 10, 0.001)]);
+    const s = computeCumulativeStats(pages, -1);
+    expect(s.turns).toBe(0);
+    expect(s.totalCostUsd).toBe(0);
+    expect(s.prefixHashes).toEqual([]);
+  });
+
+  it("clamps gracefully when upToIdx exceeds page count", () => {
+    const pages = groupRecordsByTurn([mkAssistant(1, 100, 900, 10, 0.001)]);
+    const s = computeCumulativeStats(pages, 99);
+    expect(s.turns).toBe(1); // only the one real page contributes
   });
 });
