@@ -10,6 +10,12 @@ export interface PromptInputProps {
   placeholder?: string;
 }
 
+/**
+ * Keep `<TextInput>` mounted at all times and use its `focus` prop to gate
+ * input. Conditionally rendering it (mount / unmount between turns) loses
+ * the stdin raw-mode claim on some terminals, which silently drops
+ * keystrokes after the first turn finishes.
+ */
 export function PromptInput({
   value,
   onChange,
@@ -17,21 +23,21 @@ export function PromptInput({
   disabled,
   placeholder,
 }: PromptInputProps) {
+  const effectivePlaceholder = disabled
+    ? (placeholder ?? "…waiting for response…")
+    : (placeholder ?? 'type a message, or "/exit"');
   return (
     <Box borderStyle="round" borderColor={disabled ? "gray" : "cyan"} paddingX={1}>
       <Text bold color={disabled ? "gray" : "cyan"}>
         you ›{" "}
       </Text>
-      {disabled ? (
-        <Text dimColor>{placeholder ?? "…waiting for response…"}</Text>
-      ) : (
-        <TextInput
-          value={value}
-          onChange={onChange}
-          onSubmit={onSubmit}
-          placeholder={placeholder ?? 'type a message, or "/exit"'}
-        />
-      )}
+      <TextInput
+        value={value}
+        onChange={onChange}
+        onSubmit={onSubmit}
+        focus={!disabled}
+        placeholder={effectivePlaceholder}
+      />
     </Box>
   );
 }
