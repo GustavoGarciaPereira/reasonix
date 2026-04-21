@@ -8,10 +8,14 @@ automatic prefix caching — and turn them into agent-loop superpowers that gene
 frameworks leave on the table.
 
 ```bash
-npm install reasonix       # or: npm i -g reasonix for the CLI
-export DEEPSEEK_API_KEY=sk-...
-npx reasonix chat          # live TUI with real-time cache-hit and cost panel
+npx reasonix chat          # prompts for your DeepSeek key on first run,
+                           # then live TUI with real-time cache/cost panel
 ```
+
+On first run the TUI asks for your DeepSeek API key (get one at
+[platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys)) and
+saves it to `~/.reasonix/config.json`. Set `DEEPSEEK_API_KEY` in the
+environment to override.
 
 ## Why Reasonix?
 

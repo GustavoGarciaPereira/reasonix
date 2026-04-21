@@ -41,6 +41,17 @@ export { loadDotenv } from "./env.js";
 export { fetchWithRetry } from "./retry.js";
 export type { RetryOptions, RetryInfo } from "./retry.js";
 
+export {
+  defaultConfigPath,
+  isPlausibleKey,
+  loadApiKey,
+  readConfig,
+  redactKey,
+  saveApiKey,
+  writeConfig,
+} from "./config.js";
+export type { ReasonixConfig } from "./config.js";
+
 export type {
   ChatMessage,
   ToolCall,
