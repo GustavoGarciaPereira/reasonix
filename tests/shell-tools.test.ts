@@ -7,7 +7,10 @@ import {
   NeedsConfirmationError,
   formatCommandResult,
   isAllowed,
+  prepareSpawn,
+  quoteForCmdExe,
   registerShellTools,
+  resolveExecutable,
   runCommand,
   tokenizeCommand,
 } from "../src/tools/shell.js";
@@ -200,6 +203,227 @@ describe("formatCommandResult", () => {
     expect(formatCommandResult("true", { exitCode: 0, output: "", timedOut: false })).toBe(
       "$ true\n[exit 0]",
     );
+  });
+});
+
+describe("resolveExecutable", () => {
+  it("returns the input unchanged on non-Windows platforms", () => {
+    expect(resolveExecutable("npm", { platform: "linux" })).toBe("npm");
+    expect(resolveExecutable("pytest", { platform: "darwin" })).toBe("pytest");
+  });
+
+  it("returns empty input unchanged", () => {
+    expect(resolveExecutable("", { platform: "win32" })).toBe("");
+  });
+
+  it("walks PATH × PATHEXT on Windows and returns the first hit", () => {
+    // PATHEXT case is preserved into the joined path, so the mock
+    // "filesystem" keys must match that case verbatim.
+    const hits = new Set(["C:\\tools\\npm.CMD"]);
+    const out = resolveExecutable("npm", {
+      platform: "win32",
+      env: { PATH: "C:\\nope;C:\\tools", PATHEXT: ".COM;.EXE;.BAT;.CMD" },
+      pathDelimiter: ";",
+      isFile: (p) => hits.has(p),
+    });
+    expect(out).toBe("C:\\tools\\npm.CMD");
+  });
+
+  it("honors PATHEXT ordering (.EXE beats .CMD when both exist)", () => {
+    const hits = new Set(["C:\\bin\\foo.EXE", "C:\\bin\\foo.CMD"]);
+    const out = resolveExecutable("foo", {
+      platform: "win32",
+      env: { PATH: "C:\\bin", PATHEXT: ".EXE;.CMD" },
+      pathDelimiter: ";",
+      isFile: (p) => hits.has(p),
+    });
+    expect(out).toBe("C:\\bin\\foo.EXE");
+  });
+
+  it("falls back to the raw cmd when PATH × PATHEXT yields nothing", () => {
+    const out = resolveExecutable("doesnotexist", {
+      platform: "win32",
+      env: { PATH: "C:\\bin", PATHEXT: ".EXE" },
+      pathDelimiter: ";",
+      isFile: () => false,
+    });
+    expect(out).toBe("doesnotexist");
+  });
+
+  it("skips lookup for absolute paths (\\ or /)", () => {
+    const called: string[] = [];
+    const out1 = resolveExecutable("C:\\tools\\npm.cmd", {
+      platform: "win32",
+      env: { PATH: "C:\\bin", PATHEXT: ".CMD" },
+      isFile: (p) => {
+        called.push(p);
+        return true;
+      },
+    });
+    expect(out1).toBe("C:\\tools\\npm.cmd");
+    const out2 = resolveExecutable("src/tool.js", {
+      platform: "win32",
+      env: { PATH: "C:\\bin", PATHEXT: ".CMD" },
+      isFile: () => true,
+    });
+    expect(out2).toBe("src/tool.js");
+    expect(called).toEqual([]);
+  });
+
+  it("skips lookup when the cmd already has an extension", () => {
+    const called: string[] = [];
+    const out = resolveExecutable("npm.cmd", {
+      platform: "win32",
+      env: { PATH: "C:\\bin", PATHEXT: ".CMD" },
+      isFile: (p) => {
+        called.push(p);
+        return true;
+      },
+    });
+    expect(out).toBe("npm.cmd");
+    expect(called).toEqual([]);
+  });
+
+  it("tolerates missing PATH / PATHEXT — returns cmd unchanged", () => {
+    const out = resolveExecutable("npm", {
+      platform: "win32",
+      env: {},
+      pathDelimiter: ";",
+      isFile: () => false,
+    });
+    expect(out).toBe("npm");
+  });
+
+  it("handles whitespace inside PATHEXT entries (' .CMD ' → '.CMD')", () => {
+    const hits = new Set(["C:\\bin\\npm.CMD"]);
+    const out = resolveExecutable("npm", {
+      platform: "win32",
+      env: { PATH: "C:\\bin", PATHEXT: " .CMD ; .EXE " },
+      pathDelimiter: ";",
+      isFile: (p) => hits.has(p),
+    });
+    expect(out).toBe("C:\\bin\\npm.CMD");
+  });
+});
+
+describe("quoteForCmdExe", () => {
+  it("leaves simple identifiers alone", () => {
+    expect(quoteForCmdExe("install")).toBe("install");
+    expect(quoteForCmdExe("foo-bar_123")).toBe("foo-bar_123");
+  });
+
+  it("double-quotes whitespace and cmd metacharacters", () => {
+    expect(quoteForCmdExe("hello world")).toBe('"hello world"');
+    expect(quoteForCmdExe("a&b")).toBe('"a&b"');
+    expect(quoteForCmdExe("a|b")).toBe('"a|b"');
+    expect(quoteForCmdExe("a>b")).toBe('"a>b"');
+    expect(quoteForCmdExe("a<b")).toBe('"a<b"');
+    expect(quoteForCmdExe("a^b")).toBe('"a^b"');
+    expect(quoteForCmdExe("a;b")).toBe('"a;b"');
+  });
+
+  it("doubles embedded quotes (cmd.exe escape rule)", () => {
+    expect(quoteForCmdExe('say "hi"')).toBe('"say ""hi"""');
+  });
+
+  it("empty string becomes an explicit empty-pair", () => {
+    expect(quoteForCmdExe("")).toBe('""');
+  });
+
+  it("round-trips `npm install foo` safely", () => {
+    const argv = ["C:\\Program Files\\nodejs\\npm.cmd", "install", "foo"];
+    const cmdline = argv.map(quoteForCmdExe).join(" ");
+    expect(cmdline).toBe('"C:\\Program Files\\nodejs\\npm.cmd" install foo');
+  });
+});
+
+describe("prepareSpawn", () => {
+  it("passes through unchanged on non-Windows", () => {
+    const out = prepareSpawn(["npm", "install"], { platform: "linux" });
+    expect(out.bin).toBe("npm");
+    expect(out.args).toEqual(["install"]);
+    expect(out.spawnOverrides).toEqual({});
+  });
+
+  it("wraps .cmd files through cmd.exe on Windows (post-CVE-2024-27980)", () => {
+    // Real-world install path with a space → quoting required.
+    const hits = new Set(["C:\\Program Files\\nodejs\\npm.CMD"]);
+    const out = prepareSpawn(["npm", "install", "foo"], {
+      platform: "win32",
+      env: { PATH: "C:\\Program Files\\nodejs", PATHEXT: ".EXE;.CMD" },
+      pathDelimiter: ";",
+      isFile: (p) => hits.has(p),
+    });
+    expect(out.bin).toBe("cmd.exe");
+    expect(out.args).toEqual([
+      "/d",
+      "/s",
+      "/c",
+      '"C:\\Program Files\\nodejs\\npm.CMD" install foo',
+    ]);
+    expect(out.spawnOverrides.windowsVerbatimArguments).toBe(true);
+  });
+
+  it("wraps .cmd files without quoting when the resolved path has no metacharacters", () => {
+    const hits = new Set(["C:\\tools\\npm.CMD"]);
+    const out = prepareSpawn(["npm", "install"], {
+      platform: "win32",
+      env: { PATH: "C:\\tools", PATHEXT: ".EXE;.CMD" },
+      pathDelimiter: ";",
+      isFile: (p) => hits.has(p),
+    });
+    // No spaces in the path ⇒ no surrounding quotes; cmd.exe parses
+    // backslashes literally.
+    expect(out.args[3]).toBe("C:\\tools\\npm.CMD install");
+  });
+
+  it("wraps .bat files too", () => {
+    const hits = new Set(["C:\\bin\\gradle.BAT"]);
+    const out = prepareSpawn(["gradle", "build"], {
+      platform: "win32",
+      env: { PATH: "C:\\bin", PATHEXT: ".BAT" },
+      pathDelimiter: ";",
+      isFile: (p) => hits.has(p),
+    });
+    expect(out.bin).toBe("cmd.exe");
+    expect(out.args[3]).toMatch(/gradle\.BAT/);
+  });
+
+  it("spawns .exe directly (no cmd.exe wrapping)", () => {
+    const hits = new Set(["C:\\Program Files\\nodejs\\node.EXE"]);
+    const out = prepareSpawn(["node", "--version"], {
+      platform: "win32",
+      env: { PATH: "C:\\Program Files\\nodejs", PATHEXT: ".EXE;.CMD" },
+      pathDelimiter: ";",
+      isFile: (p) => hits.has(p),
+    });
+    expect(out.bin).toBe("C:\\Program Files\\nodejs\\node.EXE");
+    expect(out.args).toEqual(["--version"]);
+    expect(out.spawnOverrides).toEqual({});
+  });
+
+  it("cmd.exe-wrapping quotes args containing metacharacters", () => {
+    const hits = new Set(["C:\\tools\\tool.CMD"]);
+    const out = prepareSpawn(["tool", "a&b", "c|d"], {
+      platform: "win32",
+      env: { PATH: "C:\\tools", PATHEXT: ".CMD" },
+      pathDelimiter: ";",
+      isFile: (p) => hits.has(p),
+    });
+    expect(out.args[3]).toBe('C:\\tools\\tool.CMD "a&b" "c|d"');
+  });
+
+  it("falls back to raw cmd when PATHEXT lookup misses", () => {
+    const out = prepareSpawn(["bogus", "arg"], {
+      platform: "win32",
+      env: { PATH: "C:\\nope", PATHEXT: ".EXE" },
+      pathDelimiter: ";",
+      isFile: () => false,
+    });
+    // No resolution, no .cmd/.bat suffix ⇒ passes through; spawn will
+    // ENOENT naturally and the caller surfaces a clean error.
+    expect(out.bin).toBe("bogus");
+    expect(out.args).toEqual(["arg"]);
   });
 });
 

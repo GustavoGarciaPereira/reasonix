@@ -3,6 +3,76 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.19] — 2026-04-22
+
+**Headline:** Windows shell hotfix. `reasonix code` now runs `npm`,
+`npx`, `tsc`, `yarn`, `pnpm`, `bun`, `pytest`, and every other
+`.cmd` / `.bat` wrapper on Windows — both under Node 18/20 (broken
+by missing PATHEXT resolution) and Node 21.7.3+/24 (broken by the
+CVE-2024-27980 prohibition on direct `.cmd`/`.bat` spawns with
+`shell: false`). Unix behavior unchanged.
+
+### Fixed
+
+- **`spawn npm ENOENT` on Windows** — `child_process.spawn` with
+  `shell: false` uses `CreateProcess`, which ignores PATHEXT. Bare
+  `npm` failed because no `npm.exe` exists — only `npm.cmd`. New
+  `resolveExecutable(cmd)` walks `PATH × PATHEXT` manually and
+  returns the full resolved path (`C:\Program Files\nodejs\npm.CMD`)
+  before handing to spawn. Keeps `shell: false` (no shell expansion
+  of piped / chained commands — the whole reason we avoided
+  `shell: true` to begin with).
+- **`spawn npm EINVAL` on Node ≥ 21.7.3 / 24** — even with the
+  resolved `.cmd` path, Node's post-CVE-2024-27980 patch refuses to
+  execute `.cmd` / `.bat` files via direct spawn. Second layer:
+  `prepareSpawn()` detects a `.cmd` / `.bat` target on Windows and
+  rewrites the invocation to `cmd.exe /d /s /c "<bin> <args…>"`
+  with `windowsVerbatimArguments: true`. Each arg is routed through
+  `quoteForCmdExe()`, which wraps in double quotes when the arg
+  contains whitespace or cmd.exe metacharacters
+  (`" & | < > ^ % ( ) , ; !`) and doubles embedded quotes per
+  cmd.exe's `""` escape rule. Arguments like `a&b` stay literal;
+  they don't become shell operators.
+
+### Added
+
+- **`resolveExecutable(cmd, opts?)`** — exported from `src/tools/shell.ts`.
+  Windows PATH × PATHEXT resolver. Opts lets tests inject `platform`,
+  `env`, and `isFile` so the Windows-specific path can be exercised
+  from a Linux CI runner without touching real fs.
+- **`prepareSpawn(argv, opts?)`** — exported. Returns the
+  `(bin, args, spawnOverrides)` tuple that runCommand should pass to
+  `child_process.spawn`. On non-Windows it's a passthrough; on
+  Windows it applies the PATHEXT lookup and the `cmd.exe` wrapping
+  when needed. Unit-tested without spawning real processes.
+- **`quoteForCmdExe(arg)`** — exported. The per-arg quoting
+  function. Round-trip tested against realistic argvs
+  (`npm install`, paths with spaces, args containing
+  `& | < > ^`, empty strings, embedded double quotes).
+
+### Tests (+21, suite 566 → 587)
+
+- `tests/shell-tools.test.ts` (+21) — `resolveExecutable` on
+  non-Windows (passthrough), PATHEXT walk (first-hit ordering,
+  whitespace-tolerant PATHEXT entries), absolute-path / slash /
+  already-extensioned passthrough, empty input, missing PATH /
+  PATHEXT. `quoteForCmdExe` (simple identifiers unquoted, whitespace
+  + metachars quoted, embedded quotes doubled, empty string
+  → `""`). `prepareSpawn` (unix passthrough, `.cmd` wraps via
+  cmd.exe, `.bat` wraps too, `.exe` direct, metachar args quoted,
+  PATHEXT miss falls through).
+
+### Internals
+
+- `runCommand` in `src/tools/shell.ts` now calls `prepareSpawn`
+  instead of spawning `argv[0]` directly. Every codepath that was
+  going through `spawn` still does; the `bin` / `args` /
+  `spawnOverrides` it receives are platform-normalized.
+- Existing allowlist + `readOnlyCheck` plan-mode gate + timeout /
+  output-cap / AbortSignal wiring is untouched.
+
+---
+
 ## [0.4.18] — 2026-04-22
 
 **Headline:** Plan Mode — the model can propose a markdown plan

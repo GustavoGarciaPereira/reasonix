@@ -48,7 +48,10 @@ export {
   NeedsConfirmationError,
   formatCommandResult,
   isAllowed,
+  prepareSpawn,
+  quoteForCmdExe,
   registerShellTools,
+  resolveExecutable,
   runCommand,
   tokenizeCommand,
 } from "./tools/shell.js";
@@ -221,4 +224,4 @@ export type {
   JSONSchema,
 } from "./types.js";
 
-export const VERSION = "0.4.18";
+export const VERSION = "0.4.19";

@@ -27,6 +27,7 @@
  */
 
 import { type SpawnOptions, spawn } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
 import * as pathMod from "node:path";
 import type { ToolRegistry } from "../tools.js";
 
@@ -208,10 +209,22 @@ export async function runCommand(
     env: process.env,
   };
 
+  // Windows: two layered fixes on top of shell:false —
+  //   1. Resolve bare command names via PATH × PATHEXT (CreateProcess
+  //      ignores PATHEXT, so `npm` alone misses `npm.cmd`).
+  //   2. Node 21.7.3+ (CVE-2024-27980) refuses to spawn `.cmd`/`.bat`
+  //      directly even with shell:false and safe args — throws
+  //      EINVAL at invocation time. Wrap those via `cmd.exe /d /s /c`
+  //      with verbatim args + manual quoting, so shell metacharacters
+  //      in arguments stay literal.
+  // Unix path is unchanged.
+  const { bin, args, spawnOverrides } = prepareSpawn(argv);
+  const effectiveSpawnOpts = { ...spawnOpts, ...spawnOverrides };
+
   return await new Promise<RunCommandResult>((resolve, reject) => {
     let child: import("node:child_process").ChildProcess;
     try {
-      child = spawn(argv[0]!, argv.slice(1), spawnOpts);
+      child = spawn(bin, args, effectiveSpawnOpts);
     } catch (err) {
       reject(err);
       return;
@@ -249,6 +262,126 @@ export async function runCommand(
       resolve({ exitCode: code, output, timedOut });
     });
   });
+}
+
+/**
+ * Test/override hooks for {@link resolveExecutable}. Omitting any field
+ * falls through to the real process globals — the runtime call path
+ * uses defaults; tests inject `platform` + `env` + `isFile` to exercise
+ * Windows-specific lookup from a Linux CI runner without touching
+ * actual fs.
+ */
+export interface ResolveExecutableOptions {
+  platform?: NodeJS.Platform;
+  env?: { PATH?: string; PATHEXT?: string };
+  /** Predicate swapped in by tests to avoid creating real files. */
+  isFile?: (path: string) => boolean;
+  /** Path.join used for the lookup. Defaults to Windows semantics on Windows. */
+  pathDelimiter?: string;
+}
+
+/**
+ * Resolve a bare command name (e.g. `npm`) to its on-disk path via
+ * PATH × PATHEXT on Windows. Returns the input unchanged on non-Windows
+ * platforms, when the input is already a path (contains `/`, `\`, or is
+ * absolute), or when no match is found in PATH × PATHEXT (caller gets a
+ * natural ENOENT from spawn, which surfaces cleanly).
+ *
+ * Why this exists: `child_process.spawn` with `shell: false` invokes
+ * Windows `CreateProcess`, which does not honor `PATHEXT` and does not
+ * search for `.cmd` / `.bat` wrappers. Node-ecosystem tools ship as
+ * `npm.cmd`, `npx.cmd`, `yarn.cmd`, etc., so a bare `npm` fails with
+ * ENOENT under `shell: false`. Flipping to `shell: true` would work
+ * but reintroduces shell-expansion (pipes, redirects, chained cmds)
+ * that the tool was explicitly designed to forbid. This resolver
+ * threads the needle.
+ */
+export function resolveExecutable(cmd: string, opts: ResolveExecutableOptions = {}): string {
+  const platform = opts.platform ?? process.platform;
+  if (platform !== "win32") return cmd;
+  if (!cmd) return cmd;
+  // Already a path fragment — spawn handles these natively.
+  if (cmd.includes("/") || cmd.includes("\\") || pathMod.isAbsolute(cmd)) return cmd;
+  // If the model wrote `npm.cmd` explicitly, respect that verbatim.
+  if (pathMod.extname(cmd)) return cmd;
+
+  const env = opts.env ?? process.env;
+  const pathExt = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .map((e) => e.trim())
+    .filter(Boolean);
+  const delimiter = opts.pathDelimiter ?? (platform === "win32" ? ";" : pathMod.delimiter);
+  const pathDirs = (env.PATH ?? "").split(delimiter).filter(Boolean);
+  const isFile = opts.isFile ?? defaultIsFile;
+
+  for (const dir of pathDirs) {
+    for (const ext of pathExt) {
+      const full = pathMod.join(dir, cmd + ext);
+      if (isFile(full)) return full;
+    }
+  }
+  return cmd;
+}
+
+function defaultIsFile(full: string): boolean {
+  try {
+    return existsSync(full) && statSync(full).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Prepare `(bin, args, spawnOpts)` for the runCommand spawn call,
+ * applying Windows-specific workarounds for (a) PATHEXT lookup and
+ * (b) the CVE-2024-27980 prohibition on direct `.cmd`/`.bat` spawns.
+ *
+ * Exported so tests can assert the transformation without booting an
+ * actual child process.
+ */
+export function prepareSpawn(
+  argv: readonly string[],
+  opts: ResolveExecutableOptions = {},
+): { bin: string; args: string[]; spawnOverrides: SpawnOptions } {
+  const head = argv[0] ?? "";
+  const tail = argv.slice(1);
+  const platform = opts.platform ?? process.platform;
+  const resolved = resolveExecutable(head, opts);
+
+  if (platform !== "win32") {
+    return { bin: resolved, args: [...tail], spawnOverrides: {} };
+  }
+
+  // `.cmd` / `.bat` wrappers require cmd.exe on post-CVE Node.
+  if (/\.(cmd|bat)$/i.test(resolved)) {
+    const cmdline = [resolved, ...tail].map(quoteForCmdExe).join(" ");
+    return {
+      bin: "cmd.exe",
+      args: ["/d", "/s", "/c", cmdline],
+      // windowsVerbatimArguments prevents Node from re-quoting the /c
+      // payload — we've already composed an exact cmd.exe command
+      // line. Without this Node wraps our already-quoted string in
+      // another round of quotes and cmd.exe can't parse it.
+      spawnOverrides: { windowsVerbatimArguments: true },
+    };
+  }
+
+  return { bin: resolved, args: [...tail], spawnOverrides: {} };
+}
+
+/**
+ * Quote an argument so cmd.exe parses it back as a single token. We
+ * always wrap in double quotes when the arg contains whitespace or
+ * any cmd.exe metacharacter, doubling embedded quotes per cmd.exe's
+ * `""` escape rule. Bare alphanumeric args pass through unquoted for
+ * readability in logs.
+ *
+ * Exported for test coverage of the quoting semantics.
+ */
+export function quoteForCmdExe(arg: string): string {
+  if (arg === "") return '""';
+  if (!/[\s"&|<>^%(),;!]/.test(arg)) return arg;
+  return `"${arg.replace(/"/g, '""')}"`;
 }
 
 /** Error thrown by `run_command` when the command isn't allowlisted. */
