@@ -3,6 +3,75 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0-alpha.1] — 2026-04-22
+
+**Headline:** MCP client lands. Any
+[Model Context Protocol](https://spec.modelcontextprotocol.io/) server's
+tools now flow through the Cache-First Loop automatically — cache-hit and
+repair benefits extend to the entire MCP ecosystem.
+
+Verified end-to-end on live DeepSeek: `reasonix run --mcp "..."` spawns an
+MCP server, bridges its tools, calls them from the model. The follow-up
+turn after the tool call hit **96.6% cache**, 94% cheaper than Claude at
+same token counts. Reference transcript committed at
+`benchmarks/tau-bench/transcripts/mcp-demo.add.jsonl`.
+
+### Added
+
+- **`reasonix chat --mcp "<cmd>"`** and **`reasonix run --mcp "<cmd>"`** —
+  spawn an MCP server and bridge its tools into the Cache-First Loop.
+  Shell-quoted command; use `--mcp-prefix` to namespace tool names when
+  mixing servers.
+- **Hand-rolled MCP client** (`src/mcp/`) — zero runtime deps. JSON-RPC
+  2.0 + MCP initialize / tools/list / tools/call over stdio NDJSON.
+  Official `@modelcontextprotocol/sdk` deliberately not used; see
+  `src/mcp/README.md` for the reasoning.
+- **`bridgeMcpTools(client)`** — walk an MCP server's tools/list result
+  and register each into a Reasonix `ToolRegistry`. MCP tools become
+  indistinguishable from native tools to the loop, inheriting
+  Cache-First + repair (scavenge / flatten / storm) automatically.
+- **Bundled demo MCP server** — `examples/mcp-server-demo.ts`, ~160
+  lines, zero deps. Exposes `echo` / `add` / `get_time`. Lets any user
+  try the whole integration locally with no external install.
+- **`shellSplit()`** — small shell-style command parser used by the
+  `--mcp` flag. Respects single/double quotes, backslash escapes,
+  tab-space runs. Throws on unterminated quotes.
+- Library exports: `McpClient`, `StdioTransport`, `bridgeMcpTools`,
+  `flattenMcpResult`, `MCP_PROTOCOL_VERSION`, and related types.
+
+### Tests
+
+- **+21 tests**:
+  - `tests/mcp.test.ts` (10) — in-process fake transport covering
+    handshake, list, call, errors, bridge, name prefixing, result
+    flattening.
+  - `tests/mcp-shell-split.test.ts` (9) — quote handling, escapes,
+    unterminated-quote error, whitespace-only input.
+  - `tests/mcp-integration.test.ts` (2) — real subprocess against
+    the bundled demo server via `node --import tsx …` (cross-platform,
+    avoids Windows `.cmd` resolution).
+- Suite: **224 passing** (was 203 at v0.2.2).
+
+### Known limits (next alpha)
+
+- No SSE transport — stdio only.
+- No resources / prompts methods — tool-use only.
+- No progress notifications — tool calls are assumed complete on first
+  response.
+- No streaming tool results.
+
+### Also in this release
+
+- **harvest-bench 18-run data + findings** (no release on its own —
+  data was illuminating, conclusion was "V3 is strong enough that
+  harvest doesn't differentiate on common math", see
+  `benchmarks/harvest/report.md`). Informed the decision to ship MCP as
+  the v0.3 headline rather than a harvest-accuracy claim.
+- **`--timeout` flag** on harvest-bench runner, default 300s. Fixes
+  120s-default client timeout on long R1 + harvest runs.
+
+---
+
 ## [0.2.2] — 2026-04-21
 
 **Headline:** 48-run bench data (3 repeats × 8 tasks × 2 modes). Reasonix
@@ -188,6 +257,7 @@ branching, and session persistence. They're not reflected as individual
 entries above because the `0.1.0` bench harness is what first produced
 *externally verifiable* evidence for their value.
 
+[0.3.0-alpha.1]: https://github.com/esengine/reasonix/releases/tag/v0.3.0-alpha.1
 [0.2.2]: https://github.com/esengine/reasonix/releases/tag/v0.2.2
 [0.2.1]: https://github.com/esengine/reasonix/releases/tag/v0.2.1
 [0.2.0]: https://github.com/esengine/reasonix/releases/tag/v0.2.0
