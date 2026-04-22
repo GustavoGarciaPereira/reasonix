@@ -3,8 +3,11 @@
  * code-editing workflows.
  *
  * What it does differently from plain chat:
- *   - Auto-bridges the official filesystem MCP server rooted at the
- *     given directory (CWD by default). No wizard, no config merge.
+ *   - Registers native filesystem tools rooted at the given directory
+ *     (CWD by default). No subprocess, no `npx install` step, R1-
+ *     friendly schemas. Replaced the old `@modelcontextprotocol/server-filesystem`
+ *     subprocess in 0.4.9 because its `edit_file` argv shape was the
+ *     biggest driver of R1 DSML hallucinations.
  *   - Uses a coding-focused system prompt (src/code/prompt.ts) that
  *     teaches the model to propose edits as SEARCH/REPLACE blocks.
  *   - Defaults to the `smart` preset (reasoner + harvest) because
@@ -13,18 +16,16 @@
  *     conversation history.
  *   - Hooks `codeMode` into the TUI so assistant replies get parsed
  *     for SEARCH/REPLACE blocks and applied on disk after each turn.
- *
- * Out of scope for v1: /commit, /undo, diff preview, .gitignore
- * filtering. The user's own `git diff` + `git checkout` is the review
- * / undo surface for now.
  */
 
 import { basename, resolve } from "node:path";
 import { sanitizeName } from "../../session.js";
+import { ToolRegistry } from "../../tools.js";
+import { registerFilesystemTools } from "../../tools/filesystem.js";
 import { chatCommand } from "./chat.js";
 
 export interface CodeOptions {
-  /** Directory to root the filesystem MCP at. Defaults to process.cwd(). */
+  /** Directory to root the filesystem tools at. Defaults to process.cwd(). */
   dir?: string;
   /** Override the default `smart` model. */
   model?: string;
@@ -41,13 +42,16 @@ export async function codeCommand(opts: CodeOptions = {}): Promise<void> {
   // `code-<sanitized-basename>` fits the session name rules without
   // truncating most project names.
   const session = opts.noSession ? undefined : `code-${sanitizeName(basename(rootDir))}`;
-  // Filesystem MCP spec pointing at rootDir. Quote the path in case it
-  // has spaces — the existing shellSplit inside parseMcpSpec understands
-  // double quotes.
-  const fsSpec = `filesystem=npx -y @modelcontextprotocol/server-filesystem ${quoteIfNeeded(rootDir)}`;
+
+  // Native filesystem tools. No subprocess, ~50-200 ms faster per call
+  // than the MCP server was, and `edit_file` takes a flat SEARCH/REPLACE
+  // shape instead of the `string="false"` JSON-in-string array that
+  // triggered R1's DSML hallucinations all through 0.4.x.
+  const tools = new ToolRegistry();
+  registerFilesystemTools(tools, { rootDir });
 
   process.stderr.write(
-    `▸ reasonix code: rooted at ${rootDir}, session "${session ?? "(ephemeral)"}"\n`,
+    `▸ reasonix code: rooted at ${rootDir}, session "${session ?? "(ephemeral)"}" · ${tools.size} native fs tool(s)\n`,
   );
 
   await chatCommand({
@@ -56,11 +60,7 @@ export async function codeCommand(opts: CodeOptions = {}): Promise<void> {
     system: codeSystemPrompt(rootDir),
     transcript: opts.transcript,
     session,
-    mcp: [fsSpec],
+    seedTools: tools,
     codeMode: { rootDir },
   });
-}
-
-function quoteIfNeeded(s: string): string {
-  return /\s|"/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s;
 }

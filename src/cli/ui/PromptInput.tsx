@@ -100,11 +100,16 @@ export function PromptInput({
             ) : (
               <Text dimColor>{"     "}</Text>
             )}
-            {showPlaceholder ? <Text dimColor>{effectivePlaceholder}</Text> : <Text>{line}</Text>}
-            {isLast && !disabled && !showPlaceholder ? (
+            {/* When showing the placeholder, the cursor is at position 0 —
+                put it BEFORE the dimmed hint text so it visually matches
+                "you're about to type here," not "you typed the placeholder."
+                When showing real content, the cursor follows the last char
+                of the last line (append-only edit model). */}
+            {showPlaceholder && isLast && !disabled ? (
               <Text color={borderColor}>{showCursor ? "▌" : " "}</Text>
             ) : null}
-            {isLast && !disabled && showPlaceholder ? (
+            {showPlaceholder ? <Text dimColor>{effectivePlaceholder}</Text> : <Text>{line}</Text>}
+            {!showPlaceholder && isLast && !disabled ? (
               <Text color={borderColor}>{showCursor ? "▌" : " "}</Text>
             ) : null}
           </Box>

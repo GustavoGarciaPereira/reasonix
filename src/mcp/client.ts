@@ -133,11 +133,20 @@ export class McpClient {
    * via `notifications/progress`; they're routed to the callback until
    * the final response arrives (or the request times out, in which
    * case the handler is simply dropped — no extra notification).
+   *
+   * When `signal` is supplied, aborting it:
+   *   1) fires `notifications/cancelled` to the server (MCP 2024-11-05
+   *      way of saying "forget this request, I no longer care"), and
+   *   2) rejects the pending promise immediately with an AbortError,
+   *      so the caller doesn't have to wait for the subprocess to
+   *      finish its in-flight file write or network request.
+   * The server MAY still emit a late response; we drop it in dispatch
+   * since the request id is gone from `pending`.
    */
   async callTool(
     name: string,
     args?: Record<string, unknown>,
-    opts: { onProgress?: McpProgressHandler } = {},
+    opts: { onProgress?: McpProgressHandler; signal?: AbortSignal } = {},
   ): Promise<CallToolResult> {
     this.assertInitialized();
     const params: CallToolParams = { name, arguments: args ?? {} };
@@ -148,7 +157,7 @@ export class McpClient {
       params._meta = { progressToken: token };
     }
     try {
-      return await this.request<CallToolResult>("tools/call", params);
+      return await this.request<CallToolResult>("tools/call", params, opts.signal);
     } finally {
       if (token !== undefined) this.progressHandlers.delete(token);
     }
@@ -213,12 +222,14 @@ export class McpClient {
     if (!this.initialized) throw new Error("MCP client not initialized — call initialize() first");
   }
 
-  private async request<R>(method: string, params: unknown): Promise<R> {
+  private async request<R>(method: string, params: unknown, signal?: AbortSignal): Promise<R> {
     const id = this.nextId++;
     const frame: JsonRpcRequest = { jsonrpc: "2.0", id, method, params };
+    let abortHandler: (() => void) | null = null;
     const promise = new Promise<R>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
+        if (abortHandler && signal) signal.removeEventListener("abort", abortHandler);
         reject(
           new Error(`MCP request ${method} (id=${id}) timed out after ${this.requestTimeoutMs}ms`),
         );
@@ -228,9 +239,49 @@ export class McpClient {
         reject,
         timeout,
       });
+      // Wire up cancellation: when signal fires, send an MCP cancellation
+      // notification to the server (so it can stop whatever it was doing)
+      // and reject the caller immediately — no need to wait for the
+      // subprocess to finish its in-flight work. Late responses from the
+      // server are dropped by `dispatch` because the id is gone from
+      // `pending`.
+      if (signal) {
+        if (signal.aborted) {
+          this.pending.delete(id);
+          clearTimeout(timeout);
+          reject(new Error(`MCP request ${method} (id=${id}) aborted before send`));
+          return;
+        }
+        abortHandler = () => {
+          this.pending.delete(id);
+          clearTimeout(timeout);
+          void this.transport
+            .send({
+              jsonrpc: "2.0",
+              method: "notifications/cancelled",
+              params: { requestId: id, reason: "aborted by user" },
+            })
+            .catch(() => {
+              // Transport may already be closing — swallow; we still
+              // reject the caller below so they unblock.
+            });
+          reject(new Error(`MCP request ${method} (id=${id}) aborted by user`));
+        };
+        signal.addEventListener("abort", abortHandler, { once: true });
+      }
     });
-    await this.transport.send(frame);
-    return promise;
+    try {
+      await this.transport.send(frame);
+    } catch (err) {
+      this.pending.delete(id);
+      if (abortHandler && signal) signal.removeEventListener("abort", abortHandler);
+      throw err;
+    }
+    try {
+      return await promise;
+    } finally {
+      if (abortHandler && signal) signal.removeEventListener("abort", abortHandler);
+    }
   }
 
   private startReaderIfNeeded(): void {

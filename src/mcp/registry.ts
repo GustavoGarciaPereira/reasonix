@@ -93,7 +93,7 @@ export async function bridgeMcpTools(
       name: registeredName,
       description: mcpTool.description ?? "",
       parameters: mcpTool.inputSchema as JSONSchema,
-      fn: async (args: Record<string, unknown>) => {
+      fn: async (args: Record<string, unknown>, ctx) => {
         const toolResult = await client.callTool(mcpTool.name, args, {
           // Forward server-side progress frames to the bridge caller,
           // tagged with the registered name so multi-server UIs can
@@ -103,6 +103,11 @@ export async function bridgeMcpTools(
           onProgress: opts.onProgress
             ? (info) => opts.onProgress!({ toolName: registeredName, ...info })
             : undefined,
+          // Thread the tool-dispatch AbortSignal all the way down to
+          // the MCP request so Esc truly cancels in flight — the
+          // client will emit notifications/cancelled AND reject the
+          // pending promise immediately, no "wait for subprocess".
+          signal: ctx?.signal,
         });
         return flattenMcpResult(toolResult, { maxChars: maxResultChars });
       },

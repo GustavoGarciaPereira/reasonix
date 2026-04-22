@@ -153,11 +153,13 @@ export class CacheFirstLoop {
   private _turn = 0;
   private _streamPreference: boolean;
   /**
-   * Set by {@link abort} to short-circuit the tool-call loop after the
-   * current iteration. Reset at the start of each `step()` so an Esc
-   * during one turn doesn't poison the next.
+   * AbortController per active turn. Threaded through the DeepSeek
+   * HTTP calls AND every tool dispatch so Esc actually cancels the
+   * in-flight network/subprocess work — not "we'll get to it after
+   * the current call finishes." Re-created at the start of each
+   * `step()` (the prior turn's signal has already fired).
    */
-  private _aborted = false;
+  private _turnAbort: AbortController = new AbortController();
 
   constructor(opts: CacheFirstLoopOptions) {
     this.client = opts.client;
@@ -316,14 +318,15 @@ export class CacheFirstLoop {
   }
 
   /**
-   * Signal the currently-running {@link step} that the user wants to
-   * stop exploring. Takes effect at the next iteration boundary — if a
-   * tool call is mid-flight it will be allowed to finish, then the
-   * loop diverts to the forced-summary path so the user gets an
-   * answer instead of a cliff. Called by the TUI on Esc.
+   * Signal the currently-running {@link step} to stop **now**. Cancels
+   * the in-flight network request (DeepSeek HTTP/SSE) AND any tool call
+   * currently dispatching (MCP `notifications/cancelled` + promise
+   * reject). The loop itself also sees `signal.aborted` at each
+   * iteration boundary and exits quickly instead of looping again.
+   * Called by the TUI on Esc.
    */
   abort(): void {
-    this._aborted = true;
+    this._turnAbort.abort();
   }
 
   /**
@@ -367,7 +370,11 @@ export class CacheFirstLoop {
   async *step(userInput: string): AsyncGenerator<LoopEvent> {
     this._turn++;
     this.scratch.reset();
-    this._aborted = false;
+    // Fresh controller for this turn: the prior step's signal has
+    // already fired (or stayed clean); either way we don't want its
+    // state to bleed into the new turn.
+    this._turnAbort = new AbortController();
+    const signal = this._turnAbort.signal;
     let pendingUser: string | null = userInput;
     const toolSpecs = this.prefix.tools();
     // 70% of the iter budget is the "you're getting close" threshold. We
@@ -377,7 +384,7 @@ export class CacheFirstLoop {
     let warnedForIterBudget = false;
 
     for (let iter = 0; iter < this.maxToolIters; iter++) {
-      if (this._aborted) {
+      if (signal.aborted) {
         // Esc means "stop now" — not "stop and force another 30-90s
         // reasoner call to produce a summary I didn't ask for". The
         // user's mental model of cancel is immediate. We emit a
@@ -463,6 +470,7 @@ export class CacheFirstLoop {
               model: this.model,
               messages,
               tools: toolSpecs.length ? toolSpecs : undefined,
+              signal,
             },
             {
               ...this.branchOptions,
@@ -521,6 +529,7 @@ export class CacheFirstLoop {
             model: this.model,
             messages,
             tools: toolSpecs.length ? toolSpecs : undefined,
+            signal,
           })) {
             if (chunk.contentDelta) {
               assistantContent += chunk.contentDelta;
@@ -560,6 +569,7 @@ export class CacheFirstLoop {
             model: this.model,
             messages,
             tools: toolSpecs.length ? toolSpecs : undefined,
+            signal,
           });
           assistantContent = resp.content;
           reasoningContent = resp.reasoningContent ?? "";
@@ -650,7 +660,7 @@ export class CacheFirstLoop {
           toolName: name,
           toolArgs: args,
         };
-        const result = await this.tools.dispatch(name, args);
+        const result = await this.tools.dispatch(name, args, { signal });
         this.appendAndPersist({
           role: "tool",
           tool_call_id: call.id ?? "",
@@ -695,6 +705,7 @@ export class CacheFirstLoop {
         model: this.model,
         messages,
         // no tools → model is forced to answer in text
+        signal: this._turnAbort.signal,
       });
       const rawContent = resp.content?.trim() ?? "";
       const cleaned = stripHallucinatedToolMarkup(rawContent);

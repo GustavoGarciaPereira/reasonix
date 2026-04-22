@@ -32,6 +32,13 @@ export interface ChatOptions {
   /** Global prefix — only used when a single anonymous server is given. */
   mcpPrefix?: string;
   /**
+   * Pre-built ToolRegistry used as a seed. MCP bridges (if any) are
+   * layered on top of whatever's already registered. Used by
+   * `reasonix code` to register native filesystem tools in place of
+   * the old `npx -y @modelcontextprotocol/server-filesystem` subprocess.
+   */
+  seedTools?: ToolRegistry;
+  /**
    * Enable SEARCH/REPLACE edit-block processing after each assistant turn.
    * Set by `reasonix code`; plain `reasonix chat` leaves this off.
    */
@@ -97,10 +104,14 @@ export async function chatCommand(opts: ChatOptions): Promise<void> {
   // updater on mount. Started null so early progress frames (before
   // the App has mounted) are dropped rather than buffered.
   const progressSink: { current: ((info: ProgressInfo) => void) | null } = { current: null };
-  let tools: ToolRegistry | undefined;
+  // Seed registry from the caller (e.g. reasonix code's native
+  // filesystem tools) — MCP bridges layer on top rather than
+  // replacing. When no seed AND no MCP, tools stays undefined and
+  // the loop runs as a bare chat.
+  let tools: ToolRegistry | undefined = opts.seedTools;
 
   if (requestedSpecs.length > 0) {
-    tools = new ToolRegistry();
+    if (!tools) tools = new ToolRegistry();
     for (const raw of requestedSpecs) {
       try {
         const spec = parseMcpSpec(raw);
@@ -167,9 +178,12 @@ export async function chatCommand(opts: ChatOptions): Promise<void> {
         );
       }
     }
-    // If every requested server failed, drop the empty registry so the
-    // loop still runs as a bare chat instead of advertising zero tools.
-    if (successfulSpecs.length === 0) {
+    // If every requested server failed AND no seed registry was
+    // provided, drop the empty registry so the loop still runs as a
+    // bare chat instead of advertising zero tools. If the caller
+    // passed seedTools we keep the registry — the seed tools are
+    // still there and usable.
+    if (successfulSpecs.length === 0 && !opts.seedTools) {
       tools = undefined;
     }
   }

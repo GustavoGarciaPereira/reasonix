@@ -3,6 +3,76 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.9] — 2026-04-22
+
+**Headline:** Three user-reported issues fixed together: Esc now
+really stops (not "after the tool finishes"), `reasonix code` drops
+the filesystem MCP subprocess for native tools with an R1-friendly
+`edit_file` shape, and the placeholder cursor renders in the right
+place. Plus a `slow_count` demo tool so progress bars are testable.
+
+### Changed
+
+- **Esc is now an immediate cancel**, not "cancel at the next iter
+  boundary." The loop now threads an AbortController through every
+  I/O path it can:
+  - `DeepSeekClient.chat`/`.stream` already accepted `signal` — now
+    wired at every call site (normal turn, branch sampling, forced
+    summary), so Esc closes the HTTP/SSE stream immediately.
+  - `ToolRegistry.dispatch` accepts `{ signal }` and passes a
+    `ToolCallContext` to the tool's `fn`. Existing tools that don't
+    consume the ctx keep working.
+  - `McpClient.callTool({ signal })` sends an MCP
+    `notifications/cancelled` for the in-flight request AND rejects
+    the pending promise right away — no "wait for subprocess."
+    Late responses are swallowed by `dispatch` because the id is
+    already gone from `pending`.
+  - `bridgeMcpTools` forwards `ctx.signal` straight into
+    `client.callTool`, so MCP tools inherit the cancellation path.
+- **Built-in filesystem tools** replace the
+  `@modelcontextprotocol/server-filesystem` subprocess inside
+  `reasonix code`. Ten tools — `read_file` (head/tail), `write_file`,
+  `edit_file` (flat SEARCH/REPLACE, not the JSON-in-string array
+  shape that triggered R1 DSML hallucinations), `list_directory`,
+  `directory_tree`, `search_files`, `get_file_info`,
+  `create_directory`, `move_file`. Sandbox enforcement on every
+  path. New CLI output: `▸ reasonix code: … · 10 native fs tool(s)`.
+  Library API: `registerFilesystemTools(registry, { rootDir })`.
+  `ChatOptions` gains `seedTools: ToolRegistry` so callers can
+  pre-register tools and still bridge MCP on top.
+
+### Fixed
+
+- **Placeholder cursor now renders at position 0**, not after the
+  dimmed hint text. Matches "you're about to type here," not "you
+  typed the placeholder." Only affects the empty-input view; when
+  there's real content the cursor still follows the last char.
+
+### Added
+
+- **`slow_count` demo tool** in `examples/mcp-server-demo.ts` that
+  emits real `notifications/progress` frames (1/N, 2/N, …) with
+  300 ms pauses. Progress-bar plumbing from 0.4.8 is now testable
+  end-to-end: `reasonix chat --mcp "demo=node --import tsx examples/mcp-server-demo.ts"` then ask the model to
+  "please use slow_count to count to 5" → bar fills in the spinner.
+- **`ToolCallContext`** public type (`{ signal?: AbortSignal }`),
+  passed to every tool's `fn`. Re-exported from `src/index.ts`.
+
+### Tests (+29, suite 387→416)
+
+- `tests/filesystem-tools.test.ts` (new, +26) — read/write/edit
+  happy paths, head/tail line selection, truncation on oversize,
+  directory refusal, sandbox escape rejection (both relative `../`
+  and absolute `/etc/…`), search case-insensitivity, empty-result
+  formatting, `edit_file` multi-match refusal, move across dirs,
+  `create_directory` idempotence, `allowWriting: false` trims the
+  write-side tool set.
+- `tests/mcp.test.ts` (+3) — AbortSignal rejects the pending
+  promise, emits `notifications/cancelled` with the correct id,
+  rejects immediately when called with an already-aborted signal.
+
+---
+
 ## [0.4.8] — 2026-04-21
 
 **Headline:** MCP progress notifications — long-running tool calls

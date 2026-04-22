@@ -30,7 +30,9 @@ export { ImmutablePrefix, AppendOnlyLog, VolatileScratch } from "./memory.js";
 export type { ImmutablePrefixOptions } from "./memory.js";
 
 export { ToolRegistry } from "./tools.js";
-export type { ToolDefinition } from "./tools.js";
+export type { ToolDefinition, ToolCallContext } from "./tools.js";
+export { registerFilesystemTools } from "./tools/filesystem.js";
+export type { FilesystemToolsOptions } from "./tools/filesystem.js";
 
 export { SessionStats, costUsd, claudeEquivalentCost } from "./telemetry.js";
 export type { TurnStats, SessionSummary } from "./telemetry.js";

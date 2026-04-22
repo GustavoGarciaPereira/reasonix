@@ -49,7 +49,7 @@ describe("MCP integration — real subprocess against bundled demo server", () =
 
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
-    expect(names).toEqual(["add", "echo", "get_time"]);
+    expect(names).toEqual(["add", "echo", "get_time", "slow_count"]);
 
     const echoResult = await client.callTool("echo", { msg: "hello" });
     const echoText = echoResult.content.map((c) => ("text" in c ? c.text : "")).join("");
@@ -70,7 +70,12 @@ describe("MCP integration — real subprocess against bundled demo server", () =
     await client.initialize();
 
     const { registry, registeredNames } = await bridgeMcpTools(client, { namePrefix: "demo_" });
-    expect(registeredNames.sort()).toEqual(["demo_add", "demo_echo", "demo_get_time"]);
+    expect(registeredNames.sort()).toEqual([
+      "demo_add",
+      "demo_echo",
+      "demo_get_time",
+      "demo_slow_count",
+    ]);
 
     // Dispatch through the registry — should round-trip through MCP
     const out = await registry.dispatch("demo_add", JSON.stringify({ a: 100, b: 1 }));
@@ -91,9 +96,9 @@ describe("MCP integration — real subprocess against bundled demo server", () =
       const shared = new ToolRegistry();
       const resA = await bridgeMcpTools(a, { registry: shared, namePrefix: "a_" });
       const resB = await bridgeMcpTools(b, { registry: shared, namePrefix: "b_" });
-      expect(resA.registeredNames).toHaveLength(3);
-      expect(resB.registeredNames).toHaveLength(3);
-      expect(shared.size).toBe(6);
+      expect(resA.registeredNames).toHaveLength(4);
+      expect(resB.registeredNames).toHaveLength(4);
+      expect(shared.size).toBe(8);
 
       const outA = await shared.dispatch("a_add", JSON.stringify({ a: 10, b: 20 }));
       expect(outA).toContain("30");

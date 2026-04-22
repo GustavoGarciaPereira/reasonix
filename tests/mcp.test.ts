@@ -410,6 +410,107 @@ describe("bridgeMcpTools: result-size cap", () => {
   });
 });
 
+describe("McpClient: abort via AbortSignal", () => {
+  /**
+   * Transport that answers initialize and then stalls on tools/call —
+   * never sends a response. Used to exercise client-side abort:
+   * with no response coming, the promise must still reject promptly
+   * when the signal fires.
+   */
+  function makeStallingTransport(): { transport: McpTransport; received: JsonRpcRequest[] } {
+    const received: JsonRpcRequest[] = [];
+    const queue: JsonRpcMessage[] = [];
+    const waiters: Array<(m: JsonRpcMessage | null) => void> = [];
+    let closed = false;
+    const push = (m: JsonRpcMessage) => {
+      const w = waiters.shift();
+      if (w) w(m);
+      else queue.push(m);
+    };
+    const transport: McpTransport = {
+      async send(msg) {
+        if (closed) throw new Error("closed");
+        if (!("id" in msg) || !("method" in msg)) {
+          received.push(msg as JsonRpcRequest);
+          return;
+        }
+        const req = msg as JsonRpcRequest;
+        received.push(req);
+        if (req.method === "initialize") {
+          push({
+            jsonrpc: "2.0",
+            id: req.id,
+            result: {
+              protocolVersion: MCP_PROTOCOL_VERSION,
+              serverInfo: { name: "stall", version: "0" },
+              capabilities: {},
+            },
+          });
+        }
+        // tools/call: no response, ever.
+      },
+      async *messages() {
+        while (true) {
+          if (queue.length > 0) {
+            yield queue.shift()!;
+            continue;
+          }
+          if (closed) return;
+          const next = await new Promise<JsonRpcMessage | null>((resolve) => {
+            waiters.push(resolve);
+          });
+          if (next === null) return;
+          yield next;
+        }
+      },
+      async close() {
+        closed = true;
+        while (waiters.length > 0) waiters.shift()!(null);
+      },
+    };
+    return { transport, received };
+  }
+
+  it("rejects the pending callTool promise when the signal aborts", async () => {
+    const { transport } = makeStallingTransport();
+    const client = new McpClient({ transport, requestTimeoutMs: 60_000 });
+    await client.initialize();
+    const ctrl = new AbortController();
+    const p = client.callTool("slow", {}, { signal: ctrl.signal });
+    // Fire the abort on the next microtask so the request actually
+    // reaches the transport before we cancel.
+    setTimeout(() => ctrl.abort(), 5);
+    await expect(p).rejects.toThrow(/aborted/);
+    await client.close();
+  });
+
+  it("emits notifications/cancelled with the request id on abort", async () => {
+    const { transport, received } = makeStallingTransport();
+    const client = new McpClient({ transport, requestTimeoutMs: 60_000 });
+    await client.initialize();
+    const ctrl = new AbortController();
+    const p = client.callTool("slow", {}, { signal: ctrl.signal });
+    setTimeout(() => ctrl.abort(), 5);
+    await p.catch(() => {});
+    const callReq = received.find((r) => r.method === "tools/call");
+    const cancelNotif = received.find((r) => r.method === "notifications/cancelled");
+    expect(callReq).toBeDefined();
+    expect(cancelNotif).toBeDefined();
+    expect((cancelNotif!.params as { requestId: number }).requestId).toBe(callReq!.id);
+    await client.close();
+  });
+
+  it("rejects immediately when called with an already-aborted signal", async () => {
+    const { transport } = makeStallingTransport();
+    const client = new McpClient({ transport, requestTimeoutMs: 60_000 });
+    await client.initialize();
+    const ctrl = new AbortController();
+    ctrl.abort();
+    await expect(client.callTool("slow", {}, { signal: ctrl.signal })).rejects.toThrow(/aborted/);
+    await client.close();
+  });
+});
+
 describe("McpClient: progress notifications", () => {
   /**
    * Build a transport where tools/call takes multiple "ticks" before

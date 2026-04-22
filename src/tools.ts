@@ -1,11 +1,23 @@
 import { analyzeSchema, flattenSchema, nestArguments } from "./repair/flatten.js";
 import type { JSONSchema, ToolSpec } from "./types.js";
 
+/**
+ * Per-call context a tool `fn` can optionally consume. Today the only
+ * field is `signal`, plumbed through so long-running tools (MCP calls,
+ * HTTP requests) can abort when the user presses Esc. Omitted fields
+ * stay optional — tools written against the pre-0.4.9 signature keep
+ * working; they just ignore cancellation, which is fine for fast
+ * local work where "await finishes" happens before the next tick anyway.
+ */
+export interface ToolCallContext {
+  signal?: AbortSignal;
+}
+
 export interface ToolDefinition<A = any, R = any> {
   name: string;
   description?: string;
   parameters?: JSONSchema;
-  fn: (args: A) => R | Promise<R>;
+  fn: (args: A, ctx?: ToolCallContext) => R | Promise<R>;
 }
 
 interface InternalTool extends ToolDefinition {
@@ -76,7 +88,11 @@ export class ToolRegistry {
     }));
   }
 
-  async dispatch(name: string, argumentsRaw: string | Record<string, unknown>): Promise<string> {
+  async dispatch(
+    name: string,
+    argumentsRaw: string | Record<string, unknown>,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<string> {
     const tool = this._tools.get(name);
     if (!tool) {
       return JSON.stringify({ error: `unknown tool: ${name}` });
@@ -105,7 +121,7 @@ export class ToolRegistry {
     }
 
     try {
-      const result = await tool.fn(args);
+      const result = await tool.fn(args, { signal: opts.signal });
       return typeof result === "string" ? result : JSON.stringify(result);
     } catch (err) {
       return JSON.stringify({

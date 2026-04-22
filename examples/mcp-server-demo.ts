@@ -67,14 +67,33 @@ const TOOLS = [
     description: "Returns the server's current ISO-8601 timestamp.",
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "slow_count",
+    description:
+      "Counts from 1 to n with a ~300 ms pause between steps, emitting notifications/progress frames along the way. Useful for demonstrating Reasonix's progress-bar UI.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        n: { type: "integer", description: "Final number to count to (default 5, max 20)" },
+      },
+    },
+  },
 ];
 
-function send(msg: JsonRpcSuccess | JsonRpcError): void {
+interface JsonRpcNotification {
+  jsonrpc: "2.0";
+  method: string;
+  params?: unknown;
+}
+
+function send(msg: JsonRpcSuccess | JsonRpcError | JsonRpcNotification): void {
   // Stdio MCP framing: one JSON per line.
   process.stdout.write(`${JSON.stringify(msg)}\n`);
 }
 
-function handleRequest(req: JsonRpcRequest): JsonRpcSuccess | JsonRpcError | null {
+async function handleRequest(
+  req: JsonRpcRequest,
+): Promise<JsonRpcSuccess | JsonRpcError | null> {
   const id = req.id ?? null;
 
   switch (req.method) {
@@ -99,10 +118,15 @@ function handleRequest(req: JsonRpcRequest): JsonRpcSuccess | JsonRpcError | nul
     }
 
     case "tools/call": {
-      const params = (req.params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
+      const params = (req.params ?? {}) as {
+        name?: string;
+        arguments?: Record<string, unknown>;
+        _meta?: { progressToken?: string | number };
+      };
       const name = params.name ?? "";
       const args = params.arguments ?? {};
-      const out = callTool(name, args);
+      const progressToken = params._meta?.progressToken;
+      const out = await callTool(name, args, progressToken);
       if (out.error) {
         return {
           jsonrpc: "2.0",
@@ -129,10 +153,11 @@ function handleRequest(req: JsonRpcRequest): JsonRpcSuccess | JsonRpcError | nul
   }
 }
 
-function callTool(
+async function callTool(
   name: string,
   args: Record<string, unknown>,
-): { text: string; error?: string } {
+  progressToken: string | number | undefined,
+): Promise<{ text: string; error?: string }> {
   if (name === "echo") {
     const msg = typeof args.msg === "string" ? args.msg : "";
     return { text: `echo: ${msg}` };
@@ -147,6 +172,28 @@ function callTool(
   }
   if (name === "get_time") {
     return { text: new Date().toISOString() };
+  }
+  if (name === "slow_count") {
+    // Cap at 20 so an over-eager model can't make the demo run for
+    // minutes. Default 5 gives ~1.5s which is plenty to see the bar.
+    const raw = typeof args.n === "number" ? args.n : Number(args.n);
+    const n = Number.isFinite(raw) && raw >= 1 ? Math.min(Math.floor(raw), 20) : 5;
+    for (let i = 1; i <= n; i++) {
+      await new Promise((r) => setTimeout(r, 300));
+      if (progressToken !== undefined) {
+        send({
+          jsonrpc: "2.0",
+          method: "notifications/progress",
+          params: {
+            progressToken,
+            progress: i,
+            total: n,
+            message: `counting ${i} of ${n}`,
+          },
+        });
+      }
+    }
+    return { text: `counted to ${n}` };
   }
   return { text: "", error: `unknown tool: ${name}` };
 }
@@ -168,8 +215,22 @@ function main(): void {
       });
       return;
     }
-    const resp = handleRequest(req);
-    if (resp) send(resp);
+    // Fire-and-forget: handleRequest is async so slow tools (slow_count
+    // and any future streamed-progress tools) can emit notifications
+    // between in-flight requests without blocking the reader loop. Any
+    // unexpected throw lands as an internal-error response so malformed
+    // tool logic doesn't silently hang the client.
+    handleRequest(req)
+      .then((resp) => {
+        if (resp) send(resp);
+      })
+      .catch((err) => {
+        send({
+          jsonrpc: "2.0",
+          id: req.id ?? null,
+          error: { code: -32603, message: `internal: ${(err as Error).message}` },
+        });
+      });
   });
   rl.on("close", () => process.exit(0));
 }
