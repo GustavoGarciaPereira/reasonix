@@ -42,12 +42,89 @@ command dumps the full R1 reasoning for the most recent turn.
   actual chain. Reports a helpful message if no reasoning is cached
   (e.g. the current model is `deepseek-chat`, which doesn't produce
   `reasoning_content`). Also listed as an alias `/reasoning`.
+- **`/retry` slash command.** Truncates the log back to just before
+  your last user message, then re-submits it so the model runs a
+  fresh turn from a clean slate. Persists the truncation to the
+  session file so reload doesn't rehydrate the stale exchange.
+  Useful to resample R1 when the first try was off, without typing
+  the question again. `SlashResult` grows a `resubmit?: string` field
+  the TUI honors after displaying the result's `info` line.
+- **`/status` is now a real situation-report.** Previously it was
+  four key=value pairs on one line; now it's a labeled table
+  covering model, harvest/branch/stream flags, last turn's context
+  usage against the window (`42k/131k (32%)`), MCP server + tool
+  counts, session name + log length + resumed-count, and pending
+  edit count in code mode. One command, whole state.
+- **Prompt history with ↑/↓.** Shell-style recall of previously
+  submitted prompts. Lives in a ref in `App.tsx`; ↑ walks back, ↓
+  walks forward (empty input at cursor=-1). Scoped to the current
+  session process — no cross-launch persistence. Fast path for
+  iterating on the same question with small tweaks.
+- **Y/N fast-path for pending edits.** When edit blocks are waiting
+  for `/apply` or `/discard`, typing just `y` or `n` + Enter maps
+  to those commands. Doesn't interfere with normal input because
+  the branch only triggers when pending count > 0. Preview line
+  now ends with `(or y) … (or n)` so users know the shortcut exists.
 
-### Tests (+3, suite 319→322)
+### Changed
 
-- `tests/slash.test.ts` (+3) — `/think` with empty scratch prints
-  "no reasoning cached", with populated scratch dumps the content,
-  help listing includes it.
+- **Tool-running row surfaces elapsed seconds + per-tool argument
+  summary.** Instead of `⠋ tool<filesystem_edit_file> running…
+  {"path":"F:\\testtest\\index.html","edits":[…]}`, you now see:
+    ```
+    ⠋ tool<filesystem_edit_file> running… 3s
+      path: F:\testtest\index.html (2 edits)
+    ```
+  Per-tool summarizers for `read_file`, `write_file`, `edit_file`,
+  `list_directory`, `directory_tree`, `search_files`, `move_file`,
+  `get_file_info`. Matches on suffix (`_read_file`) so namespaced
+  servers (`filesystem_read_file`) and anonymous servers both work.
+  Unknown tools fall back to a truncated raw-JSON preview — better
+  than nothing.
+- **Reasoning preview shows the tail, not the head.** R1 opens every
+  turn with the same "let me look at the structure…" scaffolding, so
+  previously the `↳ thinking: …` line repeated across turns and hid
+  the real content in `(+N chars)`. Now the preview window shows the
+  last ~260 chars — which is where the model actually decides what
+  to do next. Users reported the head-only preview made R1 turns
+  look identical; this fixes the underlying information-hiding bug.
+- **Tool errors render red, not yellow.** Tool results whose content
+  starts with `ERROR:` (the prefix `flattenMcpResult` adds when the
+  server reports `isError: true`) now show as a red `tool<X>  ✗`
+  header + red body, instead of the same yellow `→` as successful
+  results. A failure needs different attention than "here's your
+  directory listing."
+
+### Fixed
+
+- **Forced-summary no longer leaks DSML tool-call markup as prose.**
+  When the loop forces a no-tools summary (Esc / budget /
+  context-guard), passing `tools: undefined` turned out not to be
+  enough — R1 primed for tool use would still emit
+  `<｜DSML｜function_calls>…</｜DSML｜function_calls>` as plain text,
+  which rendered verbatim in the TUI. Fix is two layers:
+    1. Inject an explicit user-role instruction at the end of the
+       forced-summary message list ("summarize in plain prose, do
+       NOT emit any tool calls or function-call markup").
+    2. Post-hoc strip known hallucinated envelopes (DSML full-width,
+       DSML ASCII, Anthropic-style `<function_calls>`, and
+       truncated un-closed DSML openers) from the model's response
+       before yielding. Exported as `stripHallucinatedToolMarkup(s)`
+       so library callers building their own UIs can apply the same
+       cleanup.
+  When stripping leaves nothing behind, the loop emits a clear
+  fallback message pointing at `/retry` and `/think` rather than
+  showing an empty assistant turn.
+
+### Tests (+13, suite 319→332)
+
+- `tests/slash.test.ts` (+8) — `/think`, `/retry` happy path +
+  empty-log path + help listing, `/status` new format with rich
+  rows, `/status` pending-edit suppression at count 0.
+- `tests/loop-error.test.ts` (+5) — `stripHallucinatedToolMarkup`
+  against the live R1 DSML shape, Anthropic-style
+  `<function_calls>`, truncated unpaired DSML opener, plain prose
+  passthrough, and the all-markup-no-prose edge case.
 
 ---
 

@@ -3,7 +3,12 @@
 export { DeepSeekClient, Usage } from "./client.js";
 export type { ChatResponse, StreamChunk, DeepSeekClientOptions } from "./client.js";
 
-export { CacheFirstLoop, formatLoopError, healLoadedMessages } from "./loop.js";
+export {
+  CacheFirstLoop,
+  formatLoopError,
+  healLoadedMessages,
+  stripHallucinatedToolMarkup,
+} from "./loop.js";
 export type {
   CacheFirstLoopOptions,
   LoopEvent,

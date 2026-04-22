@@ -90,6 +90,13 @@ export function App({
   // auto-apply — v0.4.1 showed that "model proposed, so apply" turns
   // analysis into unintended edits. The user explicitly confirms now.
   const pendingEdits = useRef<EditBlock[]>([]);
+  // Shell-style history of user prompts. ↑/↓ while idle walks it;
+  // submit pushes to the end. Cursor -1 = "live input", 0+ = "N turns
+  // back from newest". We don't persist history to disk — sessions
+  // already keep the message log, and cross-session bash-style recall
+  // would need per-project scoping we haven't designed.
+  const promptHistory = useRef<string[]>([]);
+  const historyCursor = useRef<number>(-1);
   const [summary, setSummary] = useState<SessionSummary>({
     turns: 0,
     totalCostUsd: 0,
@@ -167,12 +174,33 @@ export function App({
   // mid-write), then diverts to its no-tools summary path so the user
   // gets an answer instead of a hard stop. Only listens while busy so
   // we don't accidentally hijack Esc in other contexts.
+  //
+  // Also handles ↑/↓ shell-style history while idle. We don't use
+  // ink-text-input's (absent) history support; parent-level useInput
+  // is simpler and lets us own the cursor semantics.
   useInput((_input, key) => {
-    if (!key.escape) return;
-    if (!busy) return;
-    if (abortedThisTurn.current) return;
-    abortedThisTurn.current = true;
-    loop.abort();
+    if (key.escape && busy) {
+      if (abortedThisTurn.current) return;
+      abortedThisTurn.current = true;
+      loop.abort();
+      return;
+    }
+    if (busy) return;
+    const hist = promptHistory.current;
+    if (key.upArrow) {
+      if (hist.length === 0) return;
+      const nextCursor = Math.min(historyCursor.current + 1, hist.length - 1);
+      historyCursor.current = nextCursor;
+      setInput(hist[hist.length - 1 - nextCursor] ?? "");
+      return;
+    }
+    if (key.downArrow) {
+      if (historyCursor.current < 0) return;
+      const nextCursor = historyCursor.current - 1;
+      historyCursor.current = nextCursor;
+      setInput(nextCursor < 0 ? "" : (hist[hist.length - 1 - nextCursor] ?? ""));
+      return;
+    }
   });
 
   /**
@@ -235,9 +263,23 @@ export function App({
 
   const handleSubmit = useCallback(
     async (raw: string) => {
-      const text = raw.trim();
+      let text = raw.trim();
       if (!text || busy) return;
       setInput("");
+      historyCursor.current = -1;
+
+      // Y/N fast-path when edits are pending. One keystroke is all it
+      // takes to commit or drop — matches the muscle memory of `git
+      // add -p` / most prompts. Deliberately scoped: only when there
+      // ARE pending edits, so "y" as a normal message still works
+      // when nothing's waiting.
+      if (codeMode && pendingEdits.current.length > 0 && (text === "y" || text === "n")) {
+        const out = text === "y" ? codeApply() : codeDiscard();
+        setHistorical((prev) => [...prev, { id: `sys-${Date.now()}`, role: "info", text: out }]);
+        promptHistory.current.push(text);
+        return;
+      }
+
       const slash = parseSlash(text);
       if (slash) {
         const result = handleSlash(slash.cmd, slash.args, loop, {
@@ -246,6 +288,7 @@ export function App({
           codeApply: codeMode ? codeApply : undefined,
           codeDiscard: codeMode ? codeDiscard : undefined,
           codeRoot: codeMode?.rootDir,
+          pendingEditCount: codeMode ? pendingEdits.current.length : undefined,
         });
         if (result.exit) {
           transcriptRef.current?.end();
@@ -266,10 +309,19 @@ export function App({
             },
           ]);
         }
-        return;
+        // `/retry` (and anything else that requests a resubmit) falls
+        // through to the normal user-message flow with the provided
+        // text instead of returning.
+        if (result.resubmit) {
+          text = result.resubmit;
+        } else {
+          promptHistory.current.push(text);
+          return;
+        }
       }
 
       // User message is immutable — push to Static immediately.
+      promptHistory.current.push(text);
       setHistorical((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", text }]);
 
       const assistantId = `a-${Date.now()}`;
@@ -536,9 +588,11 @@ function CommandStrip({ codeMode }: { codeMode: boolean }) {
       </Text>
       {codeMode ? (
         <Text dimColor>
-          code mode: /apply · /discard · /undo · /commit "msg" — edits NEVER write without /apply
+          code mode: /apply (y) · /discard (n) · /undo · /commit "msg" — edits NEVER write without
+          /apply
         </Text>
       ) : null}
+      <Text dimColor>↑/↓ recall prompts · /retry re-send last · /think see R1 full reasoning</Text>
       <Text dimColor>Esc (while thinking) — abort & summarize what was found so far</Text>
     </Box>
   );
@@ -578,7 +632,7 @@ function formatPendingPreview(blocks: EditBlock[]): string {
     const tag = b.search === "" ? "NEW " : "    ";
     return `  ${tag}${b.path}  (-${removed} +${added} lines)`;
   });
-  const header = `▸ ${blocks.length} pending edit block(s) — /apply to commit to disk, /discard to drop`;
+  const header = `▸ ${blocks.length} pending edit block(s) — /apply (or y) to commit · /discard (or n) to drop`;
   return [header, ...lines].join("\n");
 }
 

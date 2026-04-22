@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import type { CacheFirstLoop } from "../../loop.js";
 import { deleteSession, listSessions } from "../../session.js";
+import { DEEPSEEK_CONTEXT_TOKENS, DEFAULT_CONTEXT_TOKENS } from "../../telemetry.js";
 
 export interface SlashResult {
   /** Text to display back to the user as a system/info line. */
@@ -11,6 +12,13 @@ export interface SlashResult {
   clear?: boolean;
   /** Unknown command — display usage hint. */
   unknown?: boolean;
+  /**
+   * Re-submit this text as a user message after displaying `info`.
+   * Used by `/retry` — the slash command truncates the log, then
+   * asks the TUI to push the original text back through the normal
+   * submit flow so a fresh turn runs.
+   */
+  resubmit?: string;
 }
 
 /**
@@ -49,6 +57,12 @@ export interface SlashContext {
    * replies "only available in code mode".
    */
   codeRoot?: string;
+  /**
+   * How many edit blocks are currently pending `/apply` or `/discard`.
+   * Surfaced by `/status`. TUI populates it live from its pending ref;
+   * omitted → treat as 0 (chat-only session).
+   */
+  pendingEditCount?: number;
 }
 
 export function parseSlash(text: string): { cmd: string; args: string[] } | null {
@@ -88,6 +102,7 @@ export function handleSlash(
           "  /setup                   (exit + reconfigure) → run `reasonix setup`",
           "  /compact [cap]           shrink large tool results in history (default 4k/result)",
           "  /think                   dump the most recent turn's full R1 reasoning (reasoner only)",
+          "  /retry                   truncate & resend your last message (fresh sample from the model)",
           "  /apply                   (code mode) commit the pending edit blocks to disk",
           "  /discard                 (code mode) drop pending edits without writing",
           "  /undo                    (code mode) roll back the last applied edit batch",
@@ -139,6 +154,20 @@ export function handleSlash(
           "To reconfigure (preset, MCP servers, API key), exit this chat and run " +
           "`reasonix setup`. Changes take effect on next launch.",
       };
+
+    case "retry": {
+      const prev = loop.retryLastUser();
+      if (!prev) {
+        return {
+          info: "nothing to retry — no prior user message in this session's log.",
+        };
+      }
+      const preview = prev.length > 80 ? `${prev.slice(0, 80)}…` : prev;
+      return {
+        info: `▸ retrying: "${preview}"`,
+        resubmit: prev,
+      };
+    }
 
     case "think":
     case "reasoning": {
@@ -255,13 +284,31 @@ export function handleSlash(
 
     case "status": {
       const branchBudget = loop.branchOptions.budget ?? 1;
-      return {
-        info:
-          `model=${loop.model}  ` +
-          `harvest=${loop.harvestEnabled ? "on" : "off"}  ` +
-          `branch=${branchBudget > 1 ? branchBudget : "off"}  ` +
-          `stream=${loop.stream ? "on" : "off"}`,
-      };
+      const ctxMax = DEEPSEEK_CONTEXT_TOKENS[loop.model] ?? DEFAULT_CONTEXT_TOKENS;
+      const lastPromptTokens = loop.stats.summary().lastPromptTokens;
+      const ctxPct = ctxMax > 0 ? Math.round((lastPromptTokens / ctxMax) * 100) : 0;
+      const ctxLine =
+        lastPromptTokens > 0
+          ? `  ctx    ${compactNum(lastPromptTokens)}/${compactNum(ctxMax)} (${ctxPct}%)`
+          : "  ctx    no turns yet";
+      const pending = ctx.pendingEditCount ?? 0;
+      const sessionLine = loop.sessionName
+        ? `  session "${loop.sessionName}" · ${loop.log.length} messages in log (resumed ${loop.resumedMessageCount})`
+        : "  session (ephemeral — no persistence)";
+      const mcpCount = ctx.mcpSpecs?.length ?? 0;
+      const toolCount = loop.prefix.toolSpecs.length;
+      const mcpLine = `  mcp     ${mcpCount} server(s), ${toolCount} tool(s) in registry`;
+      const pendingLine =
+        pending > 0 ? `  edits   ${pending} pending (/apply to commit, /discard to drop)` : "";
+      const lines = [
+        `  model   ${loop.model}`,
+        `  flags   harvest=${loop.harvestEnabled ? "on" : "off"} · branch=${branchBudget > 1 ? branchBudget : "off"} · stream=${loop.stream ? "on" : "off"}`,
+        ctxLine,
+        mcpLine,
+        sessionLine,
+      ];
+      if (pendingLine) lines.push(pendingLine);
+      return { info: lines.join("\n") };
     }
 
     case "model": {
@@ -317,6 +364,12 @@ export function handleSlash(
     default:
       return { unknown: true, info: `unknown command: /${cmd}  (try /help)` };
   }
+}
+
+function compactNum(n: number): string {
+  if (n < 1000) return String(n);
+  const k = n / 1000;
+  return k >= 100 ? `${Math.round(k)}k` : `${k.toFixed(1)}k`;
 }
 
 function stripOuterQuotes(s: string): string {

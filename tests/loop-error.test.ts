@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { formatLoopError, healLoadedMessages } from "../src/loop.js";
+import { formatLoopError, healLoadedMessages, stripHallucinatedToolMarkup } from "../src/loop.js";
 import type { ChatMessage } from "../src/types.js";
 
 describe("formatLoopError", () => {
@@ -73,5 +73,49 @@ describe("healLoadedMessages", () => {
     const { healedCount, healedFrom } = healLoadedMessages(messages, 32_000);
     expect(healedCount).toBe(2);
     expect(healedFrom).toBe(90_000);
+  });
+});
+
+describe("stripHallucinatedToolMarkup", () => {
+  it("removes a full DSML function_calls block (the R1 hallucination we saw live)", () => {
+    const input = [
+      "Let me look at the file structure.",
+      "",
+      '<｜DSML｜function_calls> <｜DSML｜invoke name="filesystem_edit_file">',
+      '  <｜DSML｜parameter name="path" string="true">F:.html</｜DSML｜parameter>',
+      '  <｜DSML｜parameter name="edits" string="false">[...]</｜DSML｜parameter>',
+      "</｜DSML｜invoke> </｜DSML｜function_calls>",
+      "",
+      "Saved.",
+    ].join("\n");
+    const out = stripHallucinatedToolMarkup(input);
+    expect(out).toContain("Let me look at the file structure.");
+    expect(out).toContain("Saved.");
+    expect(out).not.toContain("DSML");
+    expect(out).not.toContain("filesystem_edit_file");
+  });
+
+  it("removes an Anthropic-style <function_calls> block", () => {
+    const input = "Here is the plan.\n<function_calls>\n<tool>...</tool>\n</function_calls>\nDone.";
+    const out = stripHallucinatedToolMarkup(input);
+    expect(out).toContain("Here is the plan.");
+    expect(out).toContain("Done.");
+    expect(out).not.toContain("function_calls");
+  });
+
+  it("strips a truncated DSML opener that never gets closed", () => {
+    const input = 'Before the junk.\n<｜DSML｜function_calls> <｜DSML｜invoke name="x"> ...';
+    const out = stripHallucinatedToolMarkup(input);
+    expect(out).toBe("Before the junk.");
+  });
+
+  it("leaves plain prose completely alone", () => {
+    const input = "Just a normal summary with no markup anywhere.";
+    expect(stripHallucinatedToolMarkup(input)).toBe(input);
+  });
+
+  it("returns empty string when ALL content was hallucinated markup", () => {
+    const input = "<｜DSML｜function_calls>garbage</｜DSML｜function_calls>";
+    expect(stripHallucinatedToolMarkup(input)).toBe("");
   });
 });

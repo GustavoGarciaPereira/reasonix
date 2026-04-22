@@ -54,10 +54,21 @@ export const EventRow = React.memo(function EventRow({ event }: { event: Display
     );
   }
   if (event.role === "tool") {
+    // `flattenMcpResult` prefixes server-side errors with "ERROR: ".
+    // Render those in red with a ✗ marker so they don't blend into
+    // successful tool output (yellow) — the failure mode is what the
+    // model most likely needs to act on next, and the user needs to
+    // see at a glance.
+    const isError = event.text.startsWith("ERROR:");
+    const color = isError ? "red" : "yellow";
+    const marker = isError ? "✗" : "→";
     return (
       <Box flexDirection="column" marginTop={1}>
-        <Text color="yellow">{`tool<${event.toolName ?? "?"}>  →`}</Text>
-        <Text dimColor> {truncate(event.text, 400)}</Text>
+        <Text color={color}>{`tool<${event.toolName ?? "?"}>  ${marker}`}</Text>
+        <Text color={isError ? "red" : undefined} dimColor={!isError}>
+          {" "}
+          {truncate(event.text, 400)}
+        </Text>
       </Box>
     );
   }

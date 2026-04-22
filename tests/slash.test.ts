@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { handleSlash, parseSlash } from "../src/cli/ui/slash.js";
-import { DeepSeekClient } from "../src/client.js";
+import { DeepSeekClient, Usage } from "../src/client.js";
 import { CacheFirstLoop } from "../src/loop.js";
 import { ImmutablePrefix } from "../src/memory.js";
 
@@ -49,7 +49,9 @@ describe("handleSlash", () => {
   it("/status reflects current loop config", () => {
     const loop = makeLoop();
     const r = handleSlash("status", [], loop);
-    expect(r.info).toMatch(/model=/);
+    // New format: indented table with labeled rows ("model", "flags",
+    // "ctx", "mcp", "session"). Harvest/branch live on the flags row.
+    expect(r.info).toMatch(/model\s+deepseek-/);
     expect(r.info).toMatch(/harvest=off/);
     expect(r.info).toMatch(/branch=off/);
   });
@@ -302,6 +304,52 @@ describe("handleSlash", () => {
   it("/help mentions /think", () => {
     const r = handleSlash("help", [], makeLoop());
     expect(r.info).toMatch(/\/think/);
+  });
+
+  it("/retry returns info + resubmit when there's a prior user message", () => {
+    const loop = makeLoop();
+    loop.log.append({ role: "user", content: "hello" });
+    loop.log.append({ role: "assistant", content: "hi back" });
+    const r = handleSlash("retry", [], loop);
+    expect(r.resubmit).toBe("hello");
+    expect(r.info).toMatch(/retrying/);
+    // After retry, the log should be empty (last user message and
+    // everything after were dropped; user will be re-pushed on next
+    // successful turn).
+    expect(loop.log.length).toBe(0);
+  });
+
+  it("/retry says nothing to retry when log has no user messages", () => {
+    const r = handleSlash("retry", [], makeLoop());
+    expect(r.info).toMatch(/nothing to retry/);
+    expect(r.resubmit).toBeUndefined();
+  });
+
+  it("/help mentions /retry", () => {
+    const r = handleSlash("help", [], makeLoop());
+    expect(r.info).toMatch(/\/retry/);
+  });
+
+  it("/status shows ctx / session / mcp / pending lines with rich detail", () => {
+    const loop = makeLoop();
+    // Make it look like one turn ran so lastPromptTokens > 0.
+    loop.stats.record(1, loop.model, new Usage(42_000, 50, 42_050, 40_000, 2_000));
+    loop.log.append({ role: "user", content: "hi" });
+    loop.log.append({ role: "assistant", content: "there" });
+    const r = handleSlash("status", [], loop, {
+      mcpSpecs: ["filesystem=npx -y @scope/fs /tmp", "mem=npx -y @scope/mem"],
+      pendingEditCount: 3,
+    });
+    expect(r.info).toMatch(/model\s+deepseek-/);
+    expect(r.info).toMatch(/ctx\s+\d+\.?\d*k?\/\d+k/);
+    expect(r.info).toMatch(/mcp\s+2 server\(s\)/);
+    expect(r.info).toMatch(/session.*\(ephemeral|session\s+"/);
+    expect(r.info).toMatch(/edits\s+3 pending/);
+  });
+
+  it("/status with pendingEditCount=0 hides the edits line", () => {
+    const r = handleSlash("status", [], makeLoop(), { pendingEditCount: 0 });
+    expect(r.info).not.toMatch(/pending/);
   });
 
   it("/commit strips surrounding double quotes from the message", () => {

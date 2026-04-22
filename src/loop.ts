@@ -326,6 +326,44 @@ export class CacheFirstLoop {
     this._aborted = true;
   }
 
+  /**
+   * Drop everything in the log after (and including) the most recent
+   * user message. Used by `/retry` so the caller can re-send that
+   * message with a fresh turn instead of layering another response on
+   * top of the prior exchange. Returns the content of the dropped user
+   * message, or `null` if there isn't one yet.
+   *
+   * Persists by rewriting the session file — otherwise the next
+   * launch would rehydrate the old exchange and `/retry` would seem
+   * to have done nothing.
+   */
+  retryLastUser(): string | null {
+    const entries = this.log.entries;
+    let lastUserIdx = -1;
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (entries[i]!.role === "user") {
+        lastUserIdx = i;
+        break;
+      }
+    }
+    if (lastUserIdx < 0) return null;
+    const raw = entries[lastUserIdx]!.content;
+    const userText = typeof raw === "string" ? raw : "";
+    // Keep everything strictly before the user message. The caller
+    // will submit the text again through the normal path, which
+    // re-appends the user turn on first successful API response.
+    const preserved = entries.slice(0, lastUserIdx).map((m) => ({ ...m }));
+    this.log.compactInPlace(preserved);
+    if (this.sessionName) {
+      try {
+        rewriteSession(this.sessionName, preserved);
+      } catch {
+        /* disk-full / perms — in-memory compaction still applies */
+      }
+    }
+    return userText;
+  }
+
   async *step(userInput: string): AsyncGenerator<LoopEvent> {
     this._turn++;
     this.scratch.reset();
@@ -619,14 +657,27 @@ export class CacheFirstLoop {
   ): AsyncGenerator<LoopEvent> {
     try {
       const messages = this.buildMessages(null);
+      // Passing `tools: undefined` was supposed to force a text
+      // response, but R1 can still hallucinate tool-call markup
+      // (e.g. DSML `<｜DSML｜function_calls>…</｜DSML｜function_calls>`)
+      // in prose when it's been primed by prior tool use. An explicit
+      // user-role instruction plus post-hoc stripping of known
+      // hallucination shapes keeps the user from seeing raw markup.
+      messages.push({
+        role: "user",
+        content:
+          "I'm out of tool-call budget for this turn. Summarize in plain prose what you learned from the tool results above. Do NOT emit any tool calls, function-call markup, DSML invocations, or SEARCH/REPLACE edit blocks — they will be silently discarded. Just plain text.",
+      });
       const resp = await this.client.chat({
         model: this.model,
         messages,
         // no tools → model is forced to answer in text
       });
+      const rawContent = resp.content?.trim() ?? "";
+      const cleaned = stripHallucinatedToolMarkup(rawContent);
       const summary =
-        resp.content?.trim() ||
-        "(model returned no text; try a narrower question or raise --max-tool-iters)";
+        cleaned ||
+        "(model emitted fake tool-call markup instead of a prose summary — try /retry with a narrower question, or /think to inspect R1's reasoning)";
       const reasonPrefix = reasonPrefixFor(opts.reason, this.maxToolIters);
       const annotated = `${reasonPrefix}\n\n${summary}`;
       const summaryStats = this.stats.record(this._turn, this.model, resp.usage ?? new Usage());
@@ -666,6 +717,31 @@ export class CacheFirstLoop {
     if (toolCalls.length > 0) msg.tool_calls = toolCalls;
     return msg;
   }
+}
+
+/**
+ * R1 occasionally hallucinates tool-call markup as plain text when the
+ * real tool channel has been closed — typically our forced-summary
+ * path, where `tools: undefined` is supposed to force prose but isn't
+ * always respected. The markup isn't parsed by our tool-call path
+ * (the API response's structured `tool_calls` field is empty), so
+ * it's just noise in the user's view. Strip known envelope shapes.
+ *
+ * Exported so tests can exercise it against concrete R1 outputs.
+ */
+export function stripHallucinatedToolMarkup(s: string): string {
+  let out = s;
+  // DeepSeek's DSML envelope (both the full-width "｜" character and
+  // the ASCII-only fallback we've seen — the full-width form is the
+  // one R1 emits in practice)
+  out = out.replace(/<｜DSML｜function_calls>[\s\S]*?<\/?｜DSML｜function_calls>/g, "");
+  out = out.replace(/<\|DSML\|function_calls>[\s\S]*?<\/?\|DSML\|function_calls>/g, "");
+  // Anthropic / generic XML-ish envelope
+  out = out.replace(/<function_calls>[\s\S]*?<\/function_calls>/g, "");
+  // Lone unpaired DSML opener left over after the closer was on a
+  // different line (seen when R1 truncates mid-call).
+  out = out.replace(/<｜DSML｜[\s\S]*$/g, "");
+  return out.trim();
 }
 
 function reasonPrefixFor(reason: "budget" | "aborted" | "context-guard", iterCap: number): string {
