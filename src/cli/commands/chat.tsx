@@ -198,7 +198,9 @@ export async function chatCommand(opts: ChatOptions): Promise<void> {
       progressSink={progressSink}
       {...opts}
     />,
-    { exitOnCtrlC: true },
+    // patchConsole:false — we never log to console during the TUI, and the
+    // patch is a known redraw-glitch source on winpty/MINTTY terminals.
+    { exitOnCtrlC: true, patchConsole: false },
   );
   try {
     await waitUntilExit();

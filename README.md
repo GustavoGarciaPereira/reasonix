@@ -295,6 +295,31 @@ Additional commands in `reasonix code`:
 - The model's sandbox in `reasonix code` refuses any path that resolves
   outside the launch directory, including symlink escape and `..` traversal.
 
+### Troubleshooting: duplicate rows / ghost rendering
+
+Some Windows terminals (Git Bash / MINTTY / winpty-wrapped shells)
+don't fully implement the ANSI cursor-up escapes Ink uses to repaint
+the live spinner region. Symptom: spinners, streaming previews, or
+tool-result rows print multiple copies into scrollback instead of
+overwriting in place.
+
+If you hit this, run with plain mode:
+
+```bash
+REASONIX_UI=plain npx reasonix code
+# or
+REASONIX_UI=plain npx reasonix
+```
+
+Plain mode suppresses every live/animated row and disables the
+internal tick timer. You lose the streaming preview and spinners
+but gain stable scrollback. Committed events (your prompts, tool
+results, the model's final responses) still render normally via
+Ink's `<Static>` append path.
+
+Windows Terminal, PowerShell 7 in Windows Terminal, and WezTerm
+don't need this opt-out.
+
 ---
 
 ## MCP — bring your own tools

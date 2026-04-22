@@ -31,6 +31,7 @@ export async function replayCommand(opts: ReplayOptions): Promise<void> {
   const pages = groupRecordsByTurn(parsed.records);
   const { waitUntilExit } = render(React.createElement(ReplayApp, { meta: parsed.meta, pages }), {
     exitOnCtrlC: true,
+    patchConsole: false,
   });
   await waitUntilExit();
 }

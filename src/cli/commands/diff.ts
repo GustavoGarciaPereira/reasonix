@@ -51,6 +51,7 @@ export async function diffCommand(opts: DiffOptions): Promise<void> {
   if (wantTui) {
     const { waitUntilExit } = render(React.createElement(DiffApp, { report }), {
       exitOnCtrlC: true,
+      patchConsole: false,
     });
     await waitUntilExit();
     return;

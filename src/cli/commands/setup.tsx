@@ -39,7 +39,7 @@ export async function setupCommand(_opts: SetupOptions = {}): Promise<void> {
         unmount();
       }}
     />,
-    { exitOnCtrlC: true },
+    { exitOnCtrlC: true, patchConsole: false },
   );
   await waitUntilExit();
 }

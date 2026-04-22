@@ -3,6 +3,48 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.14] — 2026-04-22
+
+**Headline:** Render-load reductions for Windows terminals where
+Ink's cursor-up repaint leaves ghost artifacts (winpty / MINTTY /
+Git Bash). No single bug fix — a set of pressure reductions plus an
+explicit opt-out for the terminals where nothing else helps.
+
+### Fixed
+
+- **`patchConsole: false`** on every `render()` call (chat, setup,
+  replay, diff). We never log to console during the TUI, so the
+  patch was pure overhead and a known redraw-glitch source on
+  wrapped-ANSI terminals.
+- **Consolidated every animated component onto a single 120ms tick.**
+  Previously `Pulse` (500ms), `Elapsed` × 2 (1000ms each), `StatusRow`
+  (120ms + 1000ms), `OngoingToolRow` (120ms + 1000ms), and
+  `PromptInput` cursor blink (500ms) each owned a private
+  `setInterval`. On a streaming turn that's 6-10 uncoordinated
+  re-render sources firing into Ink's patch loop. New
+  `TickerProvider` / `useTick` / `useElapsedSeconds` in
+  `src/cli/ui/ticker.tsx` collapses all of them to one shared
+  counter — same visible behavior, ~5× fewer React re-renders per
+  second.
+- **Flush interval 60ms → 100ms.** 10 Hz still feels live while
+  giving slow terminals more headroom per repaint. The prior 60ms
+  rate queued patches faster than some Windows terminals could
+  process them, manifesting as visible duplicates in scrollback.
+- **`reasonix --version` no longer reports 0.4.3 forever.** The
+  hardcoded `VERSION` in `src/index.ts` had been stale since April
+  21; now matches `package.json`.
+
+### Added
+
+- **`REASONIX_UI=plain` env opt-out.** Suppresses every transient
+  row in the render tree (streaming preview, ongoing-tool spinner,
+  status line, processing fallback) AND disables the ticker
+  entirely. Only `<Static>` committed events + the input prompt are
+  drawn. Trades liveness for stability; use when the default TUI
+  produces ghost rendering on your terminal.
+
+---
+
 ## [0.4.13] — 2026-04-22
 
 **Headline:** Two streaming-row bugs that made `reasonix code` feel

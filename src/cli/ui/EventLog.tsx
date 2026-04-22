@@ -1,10 +1,11 @@
 import { Box, Text } from "ink";
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { type TypedPlanState, isPlanStateEmpty } from "../../harvest.js";
 import type { BranchProgress, BranchSummary } from "../../loop.js";
 import type { TurnStats } from "../../telemetry.js";
 import { PlanStateBlock } from "./PlanStateBlock.js";
 import { Markdown } from "./markdown.js";
+import { useElapsedSeconds, useTick } from "./ticker.js";
 
 export type DisplayRole = "user" | "assistant" | "tool" | "system" | "error" | "info" | "warning";
 
@@ -217,12 +218,7 @@ function ReasoningBlock({ reasoning }: { reasoning: string }) {
  * the terminal viewport and leaves artifacts in scrollback.
  */
 function Elapsed() {
-  const [s, setS] = useState(0);
-  useEffect(() => {
-    const start = Date.now();
-    const id = setInterval(() => setS(Math.floor((Date.now() - start) / 1000)), 1000);
-    return () => clearInterval(id);
-  }, []);
+  const s = useElapsedSeconds();
   const mm = String(Math.floor(s / 60)).padStart(2, "0");
   const ss = String(s % 60).padStart(2, "0");
   return <Text dimColor>{`${mm}:${ss}`}</Text>;
@@ -344,17 +340,14 @@ function StreamingAssistant({ event }: { event: DisplayEvent }) {
 
 /**
  * Blinking indicator so the user can tell the stream is alive even
- * when the reasoner hasn't produced body text yet. Ticks every 500 ms
- * regardless of content flow — it's a heartbeat, not a progress bar.
+ * when the reasoner hasn't produced body text yet. Uses the shared
+ * tick (TICK_MS ≈ 120ms) scaled down 4× so the visible blink rate
+ * lands around 500ms — feels like a heartbeat, not a progress bar.
  */
 function Pulse() {
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 500);
-    return () => clearInterval(id);
-  }, []);
+  const tick = useTick();
   const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-  return <Text color="cyan">{frames[tick % frames.length]}</Text>;
+  return <Text color="cyan">{frames[Math.floor(tick / 4) % frames.length]}</Text>;
 }
 
 function lastLine(s: string, maxChars: number): string {

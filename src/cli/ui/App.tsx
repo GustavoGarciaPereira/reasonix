@@ -20,6 +20,7 @@ import { PromptInput } from "./PromptInput.js";
 import { SlashSuggestions } from "./SlashSuggestions.js";
 import { StatsPanel } from "./StatsPanel.js";
 import { type McpServerSummary, handleSlash, parseSlash, suggestSlashCommands } from "./slash.js";
+import { TickerProvider, useElapsedSeconds, useTick } from "./ticker.js";
 
 export interface AppProps {
   model: string;
@@ -63,9 +64,19 @@ export interface AppProps {
 /**
  * Throttle interval in ms. We flush streaming deltas at most this often to
  * avoid re-rendering the whole UI on every single token from DeepSeek.
- * 60ms ≈ 16Hz, fast enough to feel live, slow enough to not thrash Ink.
+ * 100ms ≈ 10Hz, still feels live, gives fragile terminals (winpty/MINTTY)
+ * enough room to finish a repaint before the next one arrives.
  */
-const FLUSH_INTERVAL_MS = 60;
+const FLUSH_INTERVAL_MS = 100;
+
+/**
+ * True when the user has opted out of live spinner/streaming rows.
+ * `REASONIX_UI=plain` suppresses every transient row in the render
+ * tree so only the `<Static>` committed history + the input prompt
+ * are drawn. Trades liveness for stability on terminals where Ink's
+ * cursor-up repaint leaves ghost artifacts.
+ */
+const PLAIN_UI = process.env.REASONIX_UI === "plain";
 
 interface StreamingState {
   id: string;
@@ -523,7 +534,9 @@ export function App({
           streaming: true,
         });
       };
-      const timer = setInterval(flush, FLUSH_INTERVAL_MS);
+      // In PLAIN mode the streaming row is suppressed, so flushing into
+      // streamRef does no visible work — skip the interval entirely.
+      const timer = PLAIN_UI ? null : setInterval(flush, FLUSH_INTERVAL_MS);
 
       try {
         for await (const ev of loop.step(text)) {
@@ -664,7 +677,7 @@ export function App({
         }
         flush();
       } finally {
-        clearInterval(timer);
+        if (timer) clearInterval(timer);
         setStreaming(null);
         setOngoingTool(null);
         setToolProgress(null);
@@ -697,35 +710,41 @@ export function App({
   );
 
   return (
-    <Box flexDirection="column">
-      <StatsPanel
-        summary={summary}
-        model={loop.model}
-        prefixHash={prefixHash}
-        harvestOn={loop.harvestEnabled}
-        branchBudget={loop.branchOptions.budget}
-        balance={balance}
-      />
-      <Static items={historical}>{(item) => <EventRow key={item.id} event={item} />}</Static>
-      {streaming ? (
-        <Box marginY={1}>
-          <EventRow event={streaming} />
-        </Box>
-      ) : null}
-      {ongoingTool ? <OngoingToolRow tool={ongoingTool} progress={toolProgress} /> : null}
-      {!ongoingTool && statusLine ? <StatusRow text={statusLine} /> : null}
-      {/*
-        Belt-and-suspenders fallback: if we're busy but NONE of the
-        specific indicators (streaming, ongoingTool, statusLine) is
-        visible, something is still happening — show a generic
-        "processing…" so the user never stares at a silent ticker
-        without a label. Catches micro-gaps between events that the
-        targeted status lines don't cover.
-      */}
-      {busy && !streaming && !ongoingTool && !statusLine ? <StatusRow text="processing…" /> : null}
-      <PromptInput value={input} onChange={setInput} onSubmit={handleSubmit} disabled={busy} />
-      <SlashSuggestions matches={slashMatches} selectedIndex={slashSelected} />
-    </Box>
+    <TickerProvider disabled={PLAIN_UI}>
+      <Box flexDirection="column">
+        <StatsPanel
+          summary={summary}
+          model={loop.model}
+          prefixHash={prefixHash}
+          harvestOn={loop.harvestEnabled}
+          branchBudget={loop.branchOptions.budget}
+          balance={balance}
+        />
+        <Static items={historical}>{(item) => <EventRow key={item.id} event={item} />}</Static>
+        {!PLAIN_UI && streaming ? (
+          <Box marginY={1}>
+            <EventRow event={streaming} />
+          </Box>
+        ) : null}
+        {!PLAIN_UI && ongoingTool ? (
+          <OngoingToolRow tool={ongoingTool} progress={toolProgress} />
+        ) : null}
+        {!PLAIN_UI && !ongoingTool && statusLine ? <StatusRow text={statusLine} /> : null}
+        {/*
+          Belt-and-suspenders fallback: if we're busy but NONE of the
+          specific indicators (streaming, ongoingTool, statusLine) is
+          visible, something is still happening — show a generic
+          "processing…" so the user never stares at a silent ticker
+          without a label. Catches micro-gaps between events that the
+          targeted status lines don't cover.
+        */}
+        {!PLAIN_UI && busy && !streaming && !ongoingTool && !statusLine ? (
+          <StatusRow text="processing…" />
+        ) : null}
+        <PromptInput value={input} onChange={setInput} onSubmit={handleSubmit} disabled={busy} />
+        <SlashSuggestions matches={slashMatches} selectedIndex={slashSelected} />
+      </Box>
+    </TickerProvider>
   );
 }
 
@@ -752,22 +771,14 @@ export function App({
  * spinner + elapsed seconds) so the user's eyes track the same
  * spot regardless of which kind of wait it is.
  */
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 function StatusRow({ text }: { text: string }) {
-  const [tick, setTick] = useState(0);
-  const [elapsed, setElapsed] = useState(0);
-  useEffect(() => {
-    const start = Date.now();
-    const frameId = setInterval(() => setTick((t) => t + 1), 120);
-    const secId = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
-    return () => {
-      clearInterval(frameId);
-      clearInterval(secId);
-    };
-  }, []);
-  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  const tick = useTick();
+  const elapsed = useElapsedSeconds();
   return (
     <Box marginY={1}>
-      <Text color="magenta">{frames[tick % frames.length]}</Text>
+      <Text color="magenta">{SPINNER_FRAMES[tick % SPINNER_FRAMES.length]}</Text>
       <Text color="magenta">{` ${text}`}</Text>
       <Text dimColor>{` ${elapsed}s`}</Text>
     </Box>
@@ -781,23 +792,13 @@ function OngoingToolRow({
   tool: { name: string; args?: string };
   progress: { progress: number; total?: number; message?: string } | null;
 }) {
-  const [tick, setTick] = useState(0);
-  const [elapsed, setElapsed] = useState(0);
-  useEffect(() => {
-    const start = Date.now();
-    const frameId = setInterval(() => setTick((t) => t + 1), 120);
-    const secId = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
-    return () => {
-      clearInterval(frameId);
-      clearInterval(secId);
-    };
-  }, []);
-  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  const tick = useTick();
+  const elapsed = useElapsedSeconds();
   const summary = summarizeToolArgs(tool.name, tool.args);
   return (
     <Box marginY={1} flexDirection="column">
       <Box>
-        <Text color="cyan">{frames[tick % frames.length]}</Text>
+        <Text color="cyan">{SPINNER_FRAMES[tick % SPINNER_FRAMES.length]}</Text>
         <Text color="yellow">{` tool<${tool.name}> running…`}</Text>
         <Text dimColor>{` ${elapsed}s`}</Text>
       </Box>

@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from "ink";
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { type MultilineKey, processMultilineKey } from "./multiline-keys.js";
+import { useTick } from "./ticker.js";
 
 export interface PromptInputProps {
   value: string;
@@ -32,20 +33,11 @@ export function PromptInput({
   disabled,
   placeholder,
 }: PromptInputProps) {
-  const [showCursor, setShowCursor] = useState(true);
-
-  // Blink the end-of-input cursor so it's visibly alive even when
-  // the user hasn't typed for a while. 500 ms matches a typical
-  // terminal cursor blink.
-  useEffect(() => {
-    if (disabled) {
-      setShowCursor(false);
-      return;
-    }
-    setShowCursor(true);
-    const id = setInterval(() => setShowCursor((s) => !s), 500);
-    return () => clearInterval(id);
-  }, [disabled]);
+  // Blink from the shared ticker (TICK_MS ≈ 120ms) scaled by 4 so the
+  // visible on/off toggles land around 500ms — standard cursor blink.
+  // When disabled the cursor is hidden entirely.
+  const tick = useTick();
+  const showCursor = disabled ? false : Math.floor(tick / 4) % 2 === 0;
 
   useInput(
     (input, key) => {
