@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import type { CacheFirstLoop } from "../../loop.js";
 import { deleteSession, listSessions } from "../../session.js";
 
@@ -25,6 +26,29 @@ export interface SlashContext {
    * omitted → no MCP servers attached.
    */
   mcpSpecs?: string[];
+  /**
+   * Callback for `/undo` — provided by the TUI when it's running in
+   * code mode. Returns a human-readable report of what was restored.
+   * Absent outside code mode → `/undo` replies "not available here".
+   */
+  codeUndo?: () => string;
+  /**
+   * Callback for `/apply` — commits pending edit blocks to disk. Returns
+   * a report of what landed. Absent → `/apply` replies "nothing pending"
+   * or "not available outside code mode".
+   */
+  codeApply?: () => string;
+  /**
+   * Callback for `/discard` — drops the pending edit blocks without
+   * touching disk.
+   */
+  codeDiscard?: () => string;
+  /**
+   * Root directory passed by `reasonix code`. Enables `/commit`, which
+   * runs `git add -A && git commit` in this directory. Missing → `/commit`
+   * replies "only available in code mode".
+   */
+  codeRoot?: string;
 }
 
 export function parseSlash(text: string): { cmd: string; args: string[] } | null {
@@ -63,6 +87,10 @@ export function handleSlash(
           "  /mcp                     list MCP servers + tools attached to this session",
           "  /setup                   (exit + reconfigure) → run `reasonix setup`",
           "  /compact [cap]           shrink large tool results in history (default 4k/result)",
+          "  /apply                   (code mode) commit the pending edit blocks to disk",
+          "  /discard                 (code mode) drop pending edits without writing",
+          "  /undo                    (code mode) roll back the last applied edit batch",
+          '  /commit "msg"            (code mode) git add -A && git commit -m "msg"',
           "  /sessions                list saved sessions (current is marked with ▸)",
           "  /forget                  delete the current session from disk",
           "  /clear                   clear displayed history (log + session kept)",
@@ -110,6 +138,53 @@ export function handleSlash(
           "To reconfigure (preset, MCP servers, API key), exit this chat and run " +
           "`reasonix setup`. Changes take effect on next launch.",
       };
+
+    case "undo": {
+      if (!ctx.codeUndo) {
+        return {
+          info: "/undo is only available inside `reasonix code` — chat mode doesn't apply edits.",
+        };
+      }
+      return { info: ctx.codeUndo() };
+    }
+
+    case "apply": {
+      if (!ctx.codeApply) {
+        return {
+          info: "/apply is only available inside `reasonix code` (nothing to apply here).",
+        };
+      }
+      return { info: ctx.codeApply() };
+    }
+
+    case "discard": {
+      if (!ctx.codeDiscard) {
+        return {
+          info: "/discard is only available inside `reasonix code`.",
+        };
+      }
+      return { info: ctx.codeDiscard() };
+    }
+
+    case "commit": {
+      if (!ctx.codeRoot) {
+        return {
+          info: "/commit is only available inside `reasonix code` (needs a rooted git repo).",
+        };
+      }
+      // Reassemble the original argv. The parser lowercases cmd but
+      // leaves args alone, and the TUI splits on whitespace which
+      // mangles quoted messages — rejoin with spaces and strip a
+      // surrounding pair of double quotes if the user wrote them.
+      const raw = args.join(" ").trim();
+      const message = stripOuterQuotes(raw);
+      if (!message) {
+        return {
+          info: `usage: /commit "your commit message"  — runs \`git add -A && git commit -m "…"\` in ${ctx.codeRoot}`,
+        };
+      }
+      return runGitCommit(ctx.codeRoot, message);
+    }
 
     case "compact": {
       // Manual companion to the automatic heal-on-load. Re-applies
@@ -228,4 +303,47 @@ export function handleSlash(
     default:
       return { unknown: true, info: `unknown command: /${cmd}  (try /help)` };
   }
+}
+
+function stripOuterQuotes(s: string): string {
+  if (s.length >= 2 && s.startsWith('"') && s.endsWith('"')) {
+    return s.slice(1, -1);
+  }
+  return s;
+}
+
+/**
+ * Run `git add -A` then `git commit -m <message>` in `rootDir`. Returns
+ * a SlashResult with a human-scannable info line. We surface stderr on
+ * failure so the user sees exactly what git complained about (bad
+ * config, pre-commit hook rejection, nothing staged, etc.).
+ */
+function runGitCommit(rootDir: string, message: string): SlashResult {
+  const add = spawnSync("git", ["add", "-A"], { cwd: rootDir, encoding: "utf8" });
+  if (add.error || add.status !== 0) {
+    return { info: `git add failed (${add.status ?? "?"}):\n${gitTail(add)}` };
+  }
+  const commit = spawnSync("git", ["commit", "-m", message], {
+    cwd: rootDir,
+    encoding: "utf8",
+  });
+  if (commit.error || commit.status !== 0) {
+    return { info: `git commit failed (${commit.status ?? "?"}):\n${gitTail(commit)}` };
+  }
+  const firstLine = (commit.stdout || "").split(/\r?\n/)[0] ?? "";
+  return { info: `▸ committed: ${message}${firstLine ? `\n  ${firstLine}` : ""}` };
+}
+
+/**
+ * Safely extract whatever diagnostic text is available from a spawnSync
+ * result — on Windows or when cwd doesn't exist, `stderr`/`stdout` can
+ * be `undefined` and the caller has only `error.message` to go on.
+ */
+function gitTail(res: ReturnType<typeof spawnSync>): string {
+  const stderr = (res.stderr as string | undefined) ?? "";
+  const stdout = (res.stdout as string | undefined) ?? "";
+  const body = stderr.trim() || stdout.trim();
+  if (body) return body;
+  if (res.error) return (res.error as Error).message;
+  return "(no output from git)";
 }

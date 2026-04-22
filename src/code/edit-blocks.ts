@@ -24,7 +24,7 @@
  * missing one — the user can re-ask with the exact current content.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 export interface EditBlock {
@@ -151,6 +151,88 @@ export function applyEditBlock(block: EditBlock, rootDir: string): ApplyResult {
 
 export function applyEditBlocks(blocks: EditBlock[], rootDir: string): ApplyResult[] {
   return blocks.map((b) => applyEditBlock(b, rootDir));
+}
+
+// ---------- snapshot / restore (for /undo) ----------
+
+export interface EditSnapshot {
+  /** Path relative to rootDir, as the block named it. */
+  path: string;
+  /**
+   * File content before the edit batch was applied. `null` means the
+   * file didn't exist yet — restoring that means deleting whatever the
+   * edit created.
+   */
+  prevContent: string | null;
+}
+
+/**
+ * Capture the current state of every file an edit batch is about to
+ * touch, so `/undo` can roll back if the user doesn't like the result.
+ * De-duplicates by path because one batch can contain multiple blocks
+ * for the same file, and we only want one "before" snapshot per file.
+ */
+export function snapshotBeforeEdits(blocks: EditBlock[], rootDir: string): EditSnapshot[] {
+  const absRoot = resolve(rootDir);
+  const seen = new Set<string>();
+  const snapshots: EditSnapshot[] = [];
+  for (const b of blocks) {
+    if (seen.has(b.path)) continue;
+    seen.add(b.path);
+    const abs = resolve(absRoot, b.path);
+    if (!existsSync(abs)) {
+      snapshots.push({ path: b.path, prevContent: null });
+      continue;
+    }
+    try {
+      snapshots.push({ path: b.path, prevContent: readFileSync(abs, "utf8") });
+    } catch {
+      // Unreadable (permission / binary) — record null so we at least
+      // don't pretend the snapshot is authoritative. The restore path
+      // will treat null as "delete on undo", which is wrong in that
+      // case but the file wasn't ours to begin with.
+      snapshots.push({ path: b.path, prevContent: null });
+    }
+  }
+  return snapshots;
+}
+
+/**
+ * Restore files to their snapshotted state. Snapshots with
+ * `prevContent === null` were created by the edit, so undo = delete.
+ * Otherwise the prior content is written back, replacing whatever the
+ * edit left behind.
+ */
+export function restoreSnapshots(snapshots: EditSnapshot[], rootDir: string): ApplyResult[] {
+  const absRoot = resolve(rootDir);
+  return snapshots.map((snap) => {
+    const abs = resolve(absRoot, snap.path);
+    if (abs !== absRoot && !abs.startsWith(`${absRoot}${sep()}`)) {
+      return {
+        path: snap.path,
+        status: "path-escape",
+        message: "snapshot path escapes rootDir — refusing to restore",
+      };
+    }
+    try {
+      if (snap.prevContent === null) {
+        if (existsSync(abs)) unlinkSync(abs);
+        return {
+          path: snap.path,
+          status: "applied",
+          message: "removed (the edit had created it)",
+        };
+      }
+      writeFileSync(abs, snap.prevContent, "utf8");
+      return {
+        path: snap.path,
+        status: "applied",
+        message: "restored to pre-edit content",
+      };
+    } catch (err) {
+      return { path: snap.path, status: "error", message: (err as Error).message };
+    }
+  });
 }
 
 /** Platform separator — `\` on Windows, `/` elsewhere. */

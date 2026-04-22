@@ -9,7 +9,13 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { applyEditBlock, applyEditBlocks, parseEditBlocks } from "../src/code/edit-blocks.js";
+import {
+  applyEditBlock,
+  applyEditBlocks,
+  parseEditBlocks,
+  restoreSnapshots,
+  snapshotBeforeEdits,
+} from "../src/code/edit-blocks.js";
 
 describe("parseEditBlocks", () => {
   it("parses a single block", () => {
@@ -162,6 +168,72 @@ describe("applyEditBlock", () => {
     expect(result.status).toBe("applied");
     // First "foo" replaced, second left alone.
     expect(readFileSync(join(root, "a.txt"), "utf8")).toBe("FOO bar foo\n");
+  });
+});
+
+describe("snapshotBeforeEdits + restoreSnapshots", () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "reasonix-undo-"));
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("restores a modified file to its pre-edit content", () => {
+    writeFileSync(join(root, "a.txt"), "original\n", "utf8");
+    const block = { path: "a.txt", search: "original", replace: "CHANGED", offset: 0 };
+    const snaps = snapshotBeforeEdits([block], root);
+    applyEditBlocks([block], root);
+    expect(readFileSync(join(root, "a.txt"), "utf8")).toBe("CHANGED\n");
+
+    const undoResults = restoreSnapshots(snaps, root);
+    expect(undoResults).toHaveLength(1);
+    expect(undoResults[0]!.status).toBe("applied");
+    expect(readFileSync(join(root, "a.txt"), "utf8")).toBe("original\n");
+  });
+
+  it("deletes a file that was newly created by the edit", () => {
+    const block = { path: "fresh.ts", search: "", replace: "new content", offset: 0 };
+    const snaps = snapshotBeforeEdits([block], root);
+    applyEditBlocks([block], root);
+    expect(existsSync(join(root, "fresh.ts"))).toBe(true);
+
+    restoreSnapshots(snaps, root);
+    expect(existsSync(join(root, "fresh.ts"))).toBe(false);
+  });
+
+  it("de-duplicates per path even when a batch has multiple blocks for the same file", () => {
+    writeFileSync(join(root, "a.txt"), "one two three\n", "utf8");
+    const blocks = [
+      { path: "a.txt", search: "one", replace: "ONE", offset: 0 },
+      { path: "a.txt", search: "two", replace: "TWO", offset: 10 },
+    ];
+    const snaps = snapshotBeforeEdits(blocks, root);
+    expect(snaps).toHaveLength(1); // not 2 — same file
+    expect(snaps[0]!.prevContent).toBe("one two three\n");
+  });
+
+  it("restores multiple files in a single batch independently", () => {
+    writeFileSync(join(root, "a.txt"), "aa\n", "utf8");
+    writeFileSync(join(root, "b.txt"), "bb\n", "utf8");
+    const blocks = [
+      { path: "a.txt", search: "aa", replace: "AAA", offset: 0 },
+      { path: "b.txt", search: "bb", replace: "BBB", offset: 10 },
+    ];
+    const snaps = snapshotBeforeEdits(blocks, root);
+    applyEditBlocks(blocks, root);
+
+    restoreSnapshots(snaps, root);
+    expect(readFileSync(join(root, "a.txt"), "utf8")).toBe("aa\n");
+    expect(readFileSync(join(root, "b.txt"), "utf8")).toBe("bb\n");
+  });
+
+  it("refuses to restore a snapshot whose path escapes rootDir", () => {
+    const fakeSnap = [{ path: "../escape.txt", prevContent: "boom" }];
+    const results = restoreSnapshots(fakeSnap, root);
+    expect(results[0]!.status).toBe("path-escape");
+    expect(existsSync(join(root, "..", "escape.txt"))).toBe(false);
   });
 });
 

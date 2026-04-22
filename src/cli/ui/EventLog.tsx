@@ -192,14 +192,22 @@ function StreamingAssistant({ event }: { event: DisplayEvent }) {
 
   const tail = lastLine(event.text, 140);
   const reasoningTail = event.reasoning ? lastLine(event.reasoning, 120) : "";
+  // R1 ("deepseek-reasoner") generates reasoning_content first, then
+  // content. While reasoning is streaming but content is still empty,
+  // we were showing "(waiting for first token…)" — which looked like a
+  // hang. The data is flowing, it's just landing in the thinking
+  // channel. Reflect that honestly.
+  const reasoningOnly = !event.text && !!event.reasoning;
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box>
         <Text bold color="green">
           assistant{" "}
         </Text>
+        <Pulse />
         <Text dimColor>
-          (streaming · {event.text.length}
+          {" "}
+          ({reasoningOnly ? "reasoning" : "streaming"} · {event.text.length}
           {event.reasoning ? ` + think ${event.reasoning.length}` : ""} chars){" "}
         </Text>
         <Elapsed />
@@ -211,13 +219,34 @@ function StreamingAssistant({ event }: { event: DisplayEvent }) {
       ) : null}
       {tail ? (
         <Text dimColor>▸ {tail}</Text>
+      ) : reasoningOnly ? (
+        <Text color="yellow" dimColor>
+          {
+            "  R1 is thinking before it speaks — body text starts when reasoning completes (typically 20-90s)."
+          }
+        </Text>
       ) : (
         <Text dimColor italic>
-          {"  (waiting for first token…)"}
+          {"  (waiting for first byte — connection is open)"}
         </Text>
       )}
     </Box>
   );
+}
+
+/**
+ * Blinking indicator so the user can tell the stream is alive even
+ * when the reasoner hasn't produced body text yet. Ticks every 500 ms
+ * regardless of content flow — it's a heartbeat, not a progress bar.
+ */
+function Pulse() {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 500);
+    return () => clearInterval(id);
+  }, []);
+  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  return <Text color="cyan">{frames[tick % frames.length]}</Text>;
 }
 
 function lastLine(s: string, maxChars: number): string {

@@ -228,6 +228,77 @@ describe("handleSlash", () => {
     expect(r.info).toMatch(/\/setup/);
   });
 
+  it("/undo outside code mode says it's not available", () => {
+    const r = handleSlash("undo", [], makeLoop());
+    expect(r.info).toMatch(/only available inside .reasonix code/);
+  });
+
+  it("/undo in code mode invokes the callback", () => {
+    const r = handleSlash("undo", [], makeLoop(), {
+      codeUndo: () => "▸ restored 2 file(s)",
+    });
+    expect(r.info).toMatch(/restored 2 file/);
+  });
+
+  it("/help mentions /undo and /commit", () => {
+    const r = handleSlash("help", [], makeLoop());
+    expect(r.info).toMatch(/\/undo/);
+    expect(r.info).toMatch(/\/commit/);
+  });
+
+  it("/commit outside code mode says it's not available", () => {
+    const r = handleSlash("commit", ["foo"], makeLoop());
+    expect(r.info).toMatch(/only available inside .reasonix code/);
+  });
+
+  it("/commit with no message prints usage", () => {
+    const r = handleSlash("commit", [], makeLoop(), { codeRoot: "/tmp" });
+    expect(r.info).toMatch(/usage: \/commit/);
+  });
+
+  it("/apply outside code mode says it's not available", () => {
+    const r = handleSlash("apply", [], makeLoop());
+    expect(r.info).toMatch(/only available inside .reasonix code/);
+  });
+
+  it("/apply in code mode invokes the callback", () => {
+    const r = handleSlash("apply", [], makeLoop(), {
+      codeApply: () => "▸ 2/2 edits applied",
+    });
+    expect(r.info).toMatch(/2\/2 edits applied/);
+  });
+
+  it("/discard outside code mode says it's not available", () => {
+    const r = handleSlash("discard", [], makeLoop());
+    expect(r.info).toMatch(/only available inside .reasonix code/);
+  });
+
+  it("/discard in code mode invokes the callback", () => {
+    const r = handleSlash("discard", [], makeLoop(), {
+      codeDiscard: () => "▸ discarded 3 pending",
+    });
+    expect(r.info).toMatch(/discarded 3 pending/);
+  });
+
+  it("/help mentions /apply and /discard", () => {
+    const r = handleSlash("help", [], makeLoop());
+    expect(r.info).toMatch(/\/apply/);
+    expect(r.info).toMatch(/\/discard/);
+  });
+
+  it("/commit strips surrounding double quotes from the message", () => {
+    // We can't exercise git without a real repo; instead, rely on the
+    // fact that /commit fails (no git repo at /nonexistent) but the
+    // failure output should reveal the stripped message in the
+    // arguments we passed. We mirror this by just confirming usage
+    // ISN'T printed — meaning the parser accepted a non-empty message.
+    const r = handleSlash("commit", ['"fix: tests"'], makeLoop(), { codeRoot: "/nonexistent" });
+    expect(r.info).not.toMatch(/usage: \/commit/);
+    // It WILL say git failed since /nonexistent isn't a git repo, but
+    // we don't assert the exact message — it varies by platform.
+    expect(r.info).toMatch(/git (add|commit) failed/);
+  });
+
   it("/sessions returns a hint when none exist", () => {
     const r = handleSlash("sessions", [], makeLoop());
     expect(r.info).toMatch(/no saved sessions yet|Saved sessions/);

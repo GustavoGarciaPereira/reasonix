@@ -1,7 +1,15 @@
 import type { WriteStream } from "node:fs";
 import { Box, Static, Text, useApp, useInput } from "ink";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type ApplyResult, applyEditBlocks, parseEditBlocks } from "../../code/edit-blocks.js";
+import {
+  type ApplyResult,
+  type EditBlock,
+  type EditSnapshot,
+  applyEditBlocks,
+  parseEditBlocks,
+  restoreSnapshots,
+  snapshotBeforeEdits,
+} from "../../code/edit-blocks.js";
 import { CacheFirstLoop, DeepSeekClient, ImmutablePrefix } from "../../index.js";
 import type { LoopEvent } from "../../loop.js";
 import type { SessionSummary } from "../../telemetry.js";
@@ -67,6 +75,21 @@ export function App({
   // Esc handler only fires once per turn (repeated presses would yield
   // stacked warning events).
   const abortedThisTurn = useRef(false);
+  // Name + truncated args of the tool currently dispatching. Populated
+  // on `tool_start`, cleared on `tool` (or error). Drives the
+  // "▸ tool<X> running…" pulse-spinner row so long tool calls don't
+  // look like the app hung.
+  const [ongoingTool, setOngoingTool] = useState<{ name: string; args?: string } | null>(null);
+  // Snapshots of every file the *last* edit batch touched, keyed by
+  // nothing more than "most recent". `/undo` restores from this ref
+  // and nulls it out — one level of undo, Aider-style. Multi-step
+  // undo would need a proper history stack and a clear policy for
+  // when the stack clears; v1 keeps it simple.
+  const lastEditSnapshots = useRef<EditSnapshot[] | null>(null);
+  // Pending edit blocks awaiting `/apply` or `/discard`. We do NOT
+  // auto-apply — v0.4.1 showed that "model proposed, so apply" turns
+  // analysis into unintended edits. The user explicitly confirms now.
+  const pendingEdits = useRef<EditBlock[]>([]);
   const [summary, setSummary] = useState<SessionSummary>({
     turns: 0,
     totalCostUsd: 0,
@@ -152,6 +175,53 @@ export function App({
     loop.abort();
   });
 
+  /**
+   * Callback wired into the `/undo` slash command. Restores the files
+   * last edit batch to their pre-edit state and reports per-file
+   * results. Only available when running in code mode — the slash
+   * handler gates on this callback's presence.
+   */
+  const codeUndo = useCallback((): string => {
+    if (!codeMode) return "not in code mode";
+    const snaps = lastEditSnapshots.current;
+    if (!snaps || snaps.length === 0) {
+      return "nothing to undo — no recent edit batch to restore";
+    }
+    const results = restoreSnapshots(snaps, codeMode.rootDir);
+    lastEditSnapshots.current = null;
+    return formatUndoResults(results);
+  }, [codeMode]);
+
+  /**
+   * /apply callback — write pending edit blocks to disk, snapshot
+   * beforehand so /undo still works, report per-file results.
+   */
+  const codeApply = useCallback((): string => {
+    if (!codeMode) return "not in code mode";
+    const blocks = pendingEdits.current;
+    if (blocks.length === 0) {
+      return "nothing pending — the assistant hasn't proposed edits since the last /apply or /discard.";
+    }
+    const snaps = snapshotBeforeEdits(blocks, codeMode.rootDir);
+    const results = applyEditBlocks(blocks, codeMode.rootDir);
+    const anyApplied = results.some((r) => r.status === "applied" || r.status === "created");
+    if (anyApplied) lastEditSnapshots.current = snaps;
+    pendingEdits.current = [];
+    return formatEditResults(results);
+  }, [codeMode]);
+
+  /**
+   * /discard callback — forget the pending edits without touching
+   * disk. Keeps the conversation going without the user having to
+   * argue the model out of its proposal.
+   */
+  const codeDiscard = useCallback((): string => {
+    const count = pendingEdits.current.length;
+    if (count === 0) return "nothing pending to discard.";
+    pendingEdits.current = [];
+    return `▸ discarded ${count} pending edit block(s). Nothing was written to disk.`;
+  }, []);
+
   const prefixHash = loop.prefix.fingerprint;
 
   const writeTranscript = useCallback(
@@ -170,7 +240,13 @@ export function App({
       setInput("");
       const slash = parseSlash(text);
       if (slash) {
-        const result = handleSlash(slash.cmd, slash.args, loop, { mcpSpecs });
+        const result = handleSlash(slash.cmd, slash.args, loop, {
+          mcpSpecs,
+          codeUndo: codeMode ? codeUndo : undefined,
+          codeApply: codeMode ? codeApply : undefined,
+          codeDiscard: codeMode ? codeDiscard : undefined,
+          codeRoot: codeMode?.rootDir,
+        });
         if (result.exit) {
           transcriptRef.current?.end();
           exit();
@@ -268,26 +344,36 @@ export function App({
                 streaming: false,
               },
             ]);
-            if (codeMode && finalText) {
-              // Parse and apply SEARCH/REPLACE edit blocks. Report as a
-              // synthetic info event so the user sees exactly what
-              // landed on disk this turn. Each result gets its own row
-              // for easy scan; failures stay visible alongside successes.
+            if (codeMode && finalText && !ev.forcedSummary) {
+              // Parse SEARCH/REPLACE blocks but DO NOT write them to
+              // disk. Store as pending — the user has to say /apply
+              // explicitly. This prevents "analyze the project" from
+              // silently drifting into "edit the project".
+              //
+              // `ev.forcedSummary` gates us out entirely: if the loop
+              // had to force a summary (budget / aborted / context-
+              // guard), its text is a wrap-up, not a plan to execute.
+              // Blocks dropped in a forced summary are display-only.
               const blocks = parseEditBlocks(finalText);
               if (blocks.length > 0) {
-                const results = applyEditBlocks(blocks, codeMode.rootDir);
+                pendingEdits.current = blocks;
                 setHistorical((prev) => [
                   ...prev,
                   {
-                    id: `edit-${Date.now()}`,
+                    id: `pending-${Date.now()}`,
                     role: "info",
-                    text: formatEditResults(results),
+                    text: formatPendingPreview(blocks),
                   },
                 ]);
               }
             }
+          } else if (ev.role === "tool_start") {
+            // Kick off the visual indicator. Cleared when `tool`
+            // (result) or `error` arrives, or on the finally below.
+            setOngoingTool({ name: ev.toolName ?? "?", args: ev.toolArgs });
           } else if (ev.role === "tool") {
             flush();
+            setOngoingTool(null);
             setHistorical((prev) => [
               ...prev,
               {
@@ -313,11 +399,12 @@ export function App({
       } finally {
         clearInterval(timer);
         setStreaming(null);
+        setOngoingTool(null);
         setSummary(loop.stats.summary());
         setBusy(false);
       }
     },
-    [busy, codeMode, exit, loop, mcpSpecs, writeTranscript],
+    [busy, codeApply, codeDiscard, codeMode, codeUndo, exit, loop, mcpSpecs, writeTranscript],
   );
 
   return (
@@ -335,18 +422,52 @@ export function App({
           <EventRow event={streaming} />
         </Box>
       ) : null}
+      {ongoingTool ? <OngoingToolRow tool={ongoingTool} /> : null}
       <PromptInput value={input} onChange={setInput} onSubmit={handleSubmit} disabled={busy} />
-      <CommandStrip />
+      <CommandStrip codeMode={!!codeMode} />
     </Box>
   );
 }
 
-function CommandStrip() {
+/**
+ * Live spinner row while a tool call is in flight. Without this the
+ * window between the model's `tool_calls` decision and the tool's
+ * result (often seconds for a multi-KB `filesystem_edit_file`) looks
+ * like the app has frozen — the streaming assistant display is
+ * already cleared and the input is disabled, so there's nothing to
+ * look at.
+ */
+function OngoingToolRow({ tool }: { tool: { name: string; args?: string } }) {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 120);
+    return () => clearInterval(id);
+  }, []);
+  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  const argsPreview =
+    tool.args && tool.args.length > 0 && tool.args !== "{}"
+      ? `  ${tool.args.length > 60 ? `${tool.args.slice(0, 60)}…` : tool.args}`
+      : "";
+  return (
+    <Box marginY={1}>
+      <Text color="cyan">{frames[tick % frames.length]}</Text>
+      <Text color="yellow">{` tool<${tool.name}> running…`}</Text>
+      {argsPreview ? <Text dimColor>{argsPreview}</Text> : null}
+    </Box>
+  );
+}
+
+function CommandStrip({ codeMode }: { codeMode: boolean }) {
   return (
     <Box paddingX={2} flexDirection="column">
       <Text dimColor>
         /help · /preset {"<fast|smart|max>"} · /mcp · /compact · /sessions · /setup · /clear · /exit
       </Text>
+      {codeMode ? (
+        <Text dimColor>
+          code mode: /apply · /discard · /undo · /commit "msg" — edits NEVER write without /apply
+        </Text>
+      ) : null}
       <Text dimColor>Esc (while thinking) — abort & summarize what was found so far</Text>
     </Box>
   );
@@ -369,8 +490,39 @@ function formatEditResults(results: ApplyResult[]): string {
   });
   const ok = results.filter((r) => r.status === "applied" || r.status === "created").length;
   const total = results.length;
-  const header = `▸ edit blocks: ${ok}/${total} applied — run \`git diff\` to review`;
+  const header = `▸ edit blocks: ${ok}/${total} applied — /undo to roll back, or \`git diff\` to review`;
   return [header, ...lines].join("\n");
+}
+
+/**
+ * Pending-edits preview shown after each assistant turn that proposed
+ * changes. We keep it deliberately thin — path + approximate
+ * ±line-count — because a full diff would crowd the TUI and the user
+ * can always run `git diff` after /apply.
+ */
+function formatPendingPreview(blocks: EditBlock[]): string {
+  const lines = blocks.map((b) => {
+    const removed = b.search === "" ? 0 : countLines(b.search);
+    const added = countLines(b.replace);
+    const tag = b.search === "" ? "NEW " : "    ";
+    return `  ${tag}${b.path}  (-${removed} +${added} lines)`;
+  });
+  const header = `▸ ${blocks.length} pending edit block(s) — /apply to commit to disk, /discard to drop`;
+  return [header, ...lines].join("\n");
+}
+
+function countLines(s: string): number {
+  if (s.length === 0) return 0;
+  return (s.match(/\n/g)?.length ?? 0) + 1;
+}
+
+function formatUndoResults(results: ApplyResult[]): string {
+  const lines = results.map((r) => {
+    const mark = r.status === "applied" ? "✓" : "✗";
+    const detail = r.message ? ` (${r.message})` : "";
+    return `  ${mark} ${r.path}${detail}`;
+  });
+  return [`▸ undo: restored ${results.length} file(s) to pre-edit state`, ...lines].join("\n");
 }
 
 function describeRepair(repair: {

@@ -10,13 +10,26 @@ import { DEFAULT_MAX_RESULT_CHARS, truncateForModel } from "./mcp/registry.js";
 import { AppendOnlyLog, type ImmutablePrefix, VolatileScratch } from "./memory.js";
 import { type RepairReport, ToolCallRepair } from "./repair/index.js";
 import { appendSessionMessage, loadSessionMessages, rewriteSession } from "./session.js";
-import { SessionStats, type TurnStats } from "./telemetry.js";
+import {
+  DEEPSEEK_CONTEXT_TOKENS,
+  DEFAULT_CONTEXT_TOKENS,
+  SessionStats,
+  type TurnStats,
+} from "./telemetry.js";
 import { ToolRegistry } from "./tools.js";
 import type { ChatMessage, ToolCall } from "./types.js";
 
 export type EventRole =
   | "assistant_delta"
   | "assistant_final"
+  /**
+   * Yielded immediately before a tool is dispatched. Lets the TUI put
+   * up a "▸ tool<X> running…" spinner while the tool's Promise is
+   * pending — otherwise the UI looks frozen whenever a tool call
+   * takes more than a few hundred ms (a big `filesystem_edit_file`
+   * is a typical trigger).
+   */
+  | "tool_start"
   | "tool"
   | "done"
   | "error"
@@ -58,6 +71,16 @@ export interface LoopEvent {
   branch?: BranchSummary;
   branchProgress?: BranchProgress;
   error?: string;
+  /**
+   * True on `assistant_final` events emitted by the no-tools fallback
+   * when the loop hit its budget, was aborted, or tripped the
+   * token-context guard. Consumers that act on assistant text (notably
+   * the code-mode edit applier) MUST treat these as display-only —
+   * the model is "wrapping up," not proposing new work. Applying
+   * SEARCH/REPLACE blocks found in a forced summary caused the
+   * "analysis became edits" bug in v0.4.1 and earlier.
+   */
+  forcedSummary?: boolean;
 }
 
 export interface CacheFirstLoopOptions {
@@ -141,13 +164,16 @@ export class CacheFirstLoop {
     this.prefix = opts.prefix;
     this.tools = opts.tools ?? new ToolRegistry();
     this.model = opts.model ?? "deepseek-chat";
-    // 24 is a compromise: enough for real filesystem / MCP exploration
-    // (which legitimately chains read_file → list_directory → read_file)
-    // without letting a confused model burn unlimited cost. When this
-    // ceiling is hit the loop forces a final no-tools summary call —
-    // see the post-loop branch at the bottom of step() — so the user
-    // never sees a silent stop, just a "hit tool-call budget" summary.
-    this.maxToolIters = opts.maxToolIters ?? 24;
+    // Iter cap is a safety net, not the primary stop condition. The
+    // primary stop is the token-context guard inside step(): after
+    // every model response we check whether the prompt is already past
+    // 80% of the model's context window, and if so divert to the
+    // forced-summary path. 64 is high enough that exploration almost
+    // never exhausts it before the token guard fires first — which
+    // is the point: let the real constraint (context window) drive
+    // the decision, keep the iter cap as a last-resort backstop for
+    // the case where something spins without growing the prompt.
+    this.maxToolIters = opts.maxToolIters ?? 64;
 
     // Resolve branch config first (since it forces harvest on).
     if (typeof opts.branch === "number") {
@@ -527,9 +553,42 @@ export class CacheFirstLoop {
         return;
       }
 
+      // Token-budget guard — the real stop condition. Iter count is a
+      // proxy that misses the actual constraint: how close the prompt
+      // already is to DeepSeek's 131k context. If we're over 80%, the
+      // NEXT call (with the just-executed tools' results stuffed into
+      // history) will be worse, and fairly soon it'll 400 with
+      // "maximum context length". Divert to summary instead — same
+      // path as iter-cap and Esc-abort, just triggered by a different
+      // signal so the user sees *why* it happened.
+      const ctxMax = DEEPSEEK_CONTEXT_TOKENS[this.model] ?? DEFAULT_CONTEXT_TOKENS;
+      if (usage && usage.promptTokens / ctxMax > 0.8) {
+        yield {
+          turn: this._turn,
+          role: "warning",
+          content: `context ${usage.promptTokens}/${ctxMax} (${Math.round(
+            (usage.promptTokens / ctxMax) * 100,
+          )}%) — more tools would overflow. Forcing summary from what was gathered.`,
+        };
+        yield* this.forceSummaryAfterIterLimit({ reason: "context-guard" });
+        return;
+      }
+
       for (const call of repairedCalls) {
         const name = call.function?.name ?? "";
         const args = call.function?.arguments ?? "{}";
+        // Announce the tool BEFORE awaiting it so the TUI can render a
+        // "running…" indicator. Without this, the window between
+        // assistant_final and the tool-result yield is silent from the
+        // UI's perspective — which makes long tool calls feel like the
+        // app has hung.
+        yield {
+          turn: this._turn,
+          role: "tool_start",
+          content: "",
+          toolName: name,
+          toolArgs: args,
+        };
         const result = await this.tools.dispatch(name, args);
         this.appendAndPersist({
           role: "tool",
@@ -556,7 +615,7 @@ export class CacheFirstLoop {
   }
 
   private async *forceSummaryAfterIterLimit(
-    opts: { reason: "budget" | "aborted" } = { reason: "budget" },
+    opts: { reason: "budget" | "aborted" | "context-guard" } = { reason: "budget" },
   ): AsyncGenerator<LoopEvent> {
     try {
       const messages = this.buildMessages(null);
@@ -568,10 +627,7 @@ export class CacheFirstLoop {
       const summary =
         resp.content?.trim() ||
         "(model returned no text; try a narrower question or raise --max-tool-iters)";
-      const reasonPrefix =
-        opts.reason === "aborted"
-          ? "[aborted by user (Esc) — summarizing what I found so far]"
-          : `[tool-call budget (${this.maxToolIters}) reached — forcing summary from what I found]`;
+      const reasonPrefix = reasonPrefixFor(opts.reason, this.maxToolIters);
       const annotated = `${reasonPrefix}\n\n${summary}`;
       const summaryStats = this.stats.record(this._turn, this.model, resp.usage ?? new Usage());
       this.appendAndPersist({ role: "assistant", content: summary });
@@ -580,13 +636,11 @@ export class CacheFirstLoop {
         role: "assistant_final",
         content: annotated,
         stats: summaryStats,
+        forcedSummary: true,
       };
       yield { turn: this._turn, role: "done", content: summary };
     } catch (err) {
-      const label =
-        opts.reason === "aborted"
-          ? "aborted by user"
-          : `tool-call budget (${this.maxToolIters}) reached`;
+      const label = errorLabelFor(opts.reason, this.maxToolIters);
       yield {
         turn: this._turn,
         role: "error",
@@ -612,6 +666,20 @@ export class CacheFirstLoop {
     if (toolCalls.length > 0) msg.tool_calls = toolCalls;
     return msg;
   }
+}
+
+function reasonPrefixFor(reason: "budget" | "aborted" | "context-guard", iterCap: number): string {
+  if (reason === "aborted") return "[aborted by user (Esc) — summarizing what I found so far]";
+  if (reason === "context-guard") {
+    return "[context budget running low — summarizing before the next call would overflow]";
+  }
+  return `[tool-call budget (${iterCap}) reached — forcing summary from what I found]`;
+}
+
+function errorLabelFor(reason: "budget" | "aborted" | "context-guard", iterCap: number): string {
+  if (reason === "aborted") return "aborted by user";
+  if (reason === "context-guard") return "context-guard triggered (prompt > 80% of window)";
+  return `tool-call budget (${iterCap}) reached`;
 }
 
 function summarizeBranch(chosen: BranchSample, samples: BranchSample[]): BranchSummary {

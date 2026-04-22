@@ -35,7 +35,7 @@ export interface CodeOptions {
 }
 
 export async function codeCommand(opts: CodeOptions = {}): Promise<void> {
-  const { CODE_SYSTEM_PROMPT } = await import("../../code/prompt.js");
+  const { codeSystemPrompt } = await import("../../code/prompt.js");
   const rootDir = resolve(opts.dir ?? process.cwd());
   // Per-directory session so switching projects doesn't mix histories.
   // `code-<sanitized-basename>` fits the session name rules without
@@ -53,7 +53,7 @@ export async function codeCommand(opts: CodeOptions = {}): Promise<void> {
   await chatCommand({
     model: opts.model ?? "deepseek-reasoner",
     harvest: true, // smart preset's harvest setting, always on for code
-    system: CODE_SYSTEM_PROMPT,
+    system: codeSystemPrompt(rootDir),
     transcript: opts.transcript,
     session,
     mcp: [fsSpec],

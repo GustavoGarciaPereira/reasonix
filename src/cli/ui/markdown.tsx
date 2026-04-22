@@ -206,10 +206,22 @@ interface CodeBlock {
 interface HrBlock {
   kind: "hr";
 }
+// First-class Aider-style SEARCH/REPLACE block. We detect these at
+// parse time instead of routing them through the paragraph / inline
+// markdown path because the inline parser would otherwise eat `**`
+// inside JSDoc `/** ... *\/` comments and `para.join(" ")` would
+// collapse the block's newlines. Rendered as a diff so the user can
+// actually read what's about to change.
+interface EditBlockView {
+  kind: "edit-block";
+  filename: string;
+  search: string;
+  replace: string;
+}
 
-type Block = ParagraphBlock | HeadingBlock | BulletBlock | CodeBlock | HrBlock;
+type Block = ParagraphBlock | HeadingBlock | BulletBlock | CodeBlock | HrBlock | EditBlockView;
 
-function parseBlocks(raw: string): Block[] {
+export function parseBlocks(raw: string): Block[] {
   const lines = raw.split(/\r?\n/);
   const out: Block[] = [];
   let para: string[] = [];
@@ -231,8 +243,49 @@ function parseBlocks(raw: string): Block[] {
     }
   };
 
-  for (const rawLine of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i]!;
     const line = rawLine.replace(/\s+$/g, "");
+
+    // Detect Aider-style SEARCH/REPLACE block. Matches the preceding
+    // non-blank line as the filename, then `<<<<<<< SEARCH`, content,
+    // `=======`, content, `>>>>>>> REPLACE`. We don't do markdown
+    // inside — neither the paragraph nor inline parsers should touch
+    // this content.
+    if (!inCode && /^<{7} SEARCH\s*$/.test(line)) {
+      // Filename is the previous non-blank line we just pushed to para.
+      // Pull it back out; if there isn't one, treat as literal text.
+      const filename = para.pop()?.trim();
+      if (filename) {
+        flushPara();
+        flushList();
+        let j = i + 1;
+        const searchLines: string[] = [];
+        while (j < lines.length && !/^={7}\s*$/.test(lines[j]!)) {
+          searchLines.push(lines[j]!);
+          j++;
+        }
+        const replaceLines: string[] = [];
+        let k = j + 1;
+        while (k < lines.length && !/^>{7} REPLACE\s*$/.test(lines[k]!)) {
+          replaceLines.push(lines[k]!);
+          k++;
+        }
+        if (j < lines.length && k < lines.length) {
+          out.push({
+            kind: "edit-block",
+            filename,
+            search: searchLines.join("\n"),
+            replace: replaceLines.join("\n"),
+          });
+          i = k;
+          continue;
+        }
+        // Malformed — no separator or no close. Fall through: put
+        // the filename back in the paragraph so we don't lose it.
+        para.push(filename);
+      }
+    }
 
     const fence = line.match(/^```(\w*)/);
     if (fence) {
@@ -336,9 +389,56 @@ function BlockView({ block }: { block: Block }) {
           <Text color="yellow">{block.text}</Text>
         </Box>
       );
+    case "edit-block":
+      return <EditBlockRow block={block} />;
     case "hr":
       return <Text dimColor>{"────────────────────────"}</Text>;
   }
+}
+
+/**
+ * SEARCH/REPLACE rendered as a minimal diff: filename on top, red
+ * `-` lines, a gutter, green `+` lines. No inner markdown / inline
+ * parsing — content is shown verbatim so JSDoc `/**` and `*` won't
+ * be eaten by bold/italic regex.
+ *
+ * A truly empty SEARCH means "new file" and we label the filename
+ * accordingly instead of rendering an empty red half.
+ */
+function EditBlockRow({ block }: { block: EditBlockView }) {
+  const isNewFile = block.search.length === 0;
+  const searchLines = block.search.split("\n");
+  const replaceLines = block.replace.split("\n");
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
+      <Box>
+        <Text bold color="cyan">
+          {block.filename}
+        </Text>
+        {isNewFile ? (
+          <Text color="green" bold>
+            {" (new file)"}
+          </Text>
+        ) : null}
+      </Box>
+      {isNewFile ? null : (
+        <Box flexDirection="column" marginTop={1}>
+          {searchLines.map((line, i) => (
+            <Text key={`s-${i}-${line.length}`} color="red">
+              {`- ${line}`}
+            </Text>
+          ))}
+        </Box>
+      )}
+      <Box flexDirection="column" marginTop={isNewFile ? 1 : 0}>
+        {replaceLines.map((line, i) => (
+          <Text key={`r-${i}-${line.length}`} color="green">
+            {`+ ${line}`}
+          </Text>
+        ))}
+      </Box>
+    </Box>
+  );
 }
 
 export function Markdown({ text }: { text: string }) {

@@ -3,6 +3,135 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-04-21
+
+**Headline:** `reasonix code` grows `/undo`, `/commit`, `.gitignore`
+awareness — and, **critically, stops auto-writing edits to disk.** A
+real-session bug ("I asked to analyze the project, it silently edited
+a file") exposed that v0.4.0's auto-apply was the wrong default.
+Edits now sit as **pending** until the user says `/apply`. This
+release also replaces the fixed iter-count budget with a
+token-context guard, which you were right to call out as the correct
+abstraction from the start.
+
+### Fixed (behavior change for code-mode users)
+
+- **Edits are now gated behind `/apply`.** Each assistant turn's
+  SEARCH/REPLACE blocks are parsed and shown as a preview line
+  (`▸ N pending edit block(s) — /apply to commit, /discard to drop`)
+  with per-block `path  (-N +M lines)`. Nothing touches disk without
+  explicit `/apply`. Pending state survives across user messages —
+  you can keep chatting and land the batch later. Aider's model, which
+  we should have picked from the start.
+- **Forced-summary events are tagged `forcedSummary: true` on
+  `LoopEvent`.** The code-mode edit applier ignores tagged events
+  entirely. Without this, a budget / abort / context-guard summary
+  could dump SEARCH/REPLACE blocks into output and silently turn
+  "analysis" into "edit". This was the root-cause bug for the
+  real-session report.
+- **Token-context guard replaces iter count as the primary stop.**
+  After every model response, if `promptTokens / contextWindow > 0.8`
+  the loop emits a yellow warning, skips executing the tool calls the
+  model just proposed, and diverts to the no-tools summary path
+  (`reason: "context-guard"`). Iter cap bumped 24 → 64 as a
+  last-resort backstop — the real constraint is the 131k-token
+  window, not a magic iteration count.
+- **Stray `EditSummary` / `summarizeEdit` reverted** from
+  `src/code/edit-blocks.ts`. v0.4.0's auto-apply let the model write
+  it during a failed forced-summary run. Nothing referenced it.
+  Removed.
+- **SEARCH/REPLACE blocks render as a real diff, not mangled prose.**
+  Previously the Markdown renderer fed SEARCH/REPLACE content through
+  the paragraph path — which joined lines with spaces and let the
+  inline bold/italic regex eat `*` characters inside JSDoc `/** … */`
+  comments. Output looked like `/** Edit landed on disk. /` with
+  trailing `*` consumed and newlines flattened. Now the parser
+  recognizes the `<filename>` / `<<<<<<< SEARCH` / `=======` /
+  `>>>>>>> REPLACE` envelope and emits a dedicated `edit-block` block
+  kind, rendered as `- ` / `+ ` diff rows with the filename on top
+  and (new file) tagged for empty-SEARCH creations. No inline
+  markdown inside — content is shown verbatim.
+- **"Reasoning before it speaks" UX no longer looks frozen.** Under
+  `deepseek-reasoner`, R1 streams `reasoning_content` first and
+  `content` only after — often 20-90 seconds of silence from the
+  user's perspective. The streaming preview used to show
+  `(waiting for first token…)` during that window, making the app
+  look hung. Now:
+    - A cyan braille-spinner pulse ticks at 500 ms so the heartbeat
+      is visible regardless of stream bursts.
+    - Label switches `streaming` → `reasoning` while body is empty.
+    - The "waiting" line is replaced with an explicit
+      `R1 is thinking before it speaks — body text starts when
+      reasoning completes (typically 20-90s)` so the user knows to
+      wait, not to bail.
+- **Tool calls now show a spinner while dispatching.** The loop
+  gains a new `tool_start` event yielded *before* `await
+  tools.dispatch(...)`, separate from the existing `tool` event
+  yielded with the result. The TUI renders a
+  `⠋ tool<filesystem_edit_file> running…` row (with a short args
+  preview) while the Promise is pending. Without this, a multi-KB
+  edit could sit for a full second with no visual feedback — the
+  streaming block was already cleared on `assistant_final` and the
+  input was disabled. Transcripts still only record the `tool`
+  result event (not `tool_start`), so replay/diff output is
+  unchanged.
+
+### Added (code mode)
+
+- **`/apply`** — commits pending edit blocks, snapshots for `/undo`,
+  per-block status.
+- **`/discard`** — forgets pending edits without writing.
+- **`/undo`** — roll back the *last applied* edit batch. Restores
+  files to their pre-`/apply` content, deletes any file the batch had
+  just created. One level of history for now, Aider-style.
+- **`/commit "msg"`** — `git add -A && git commit -m "msg"` inside
+  the code-mode rootDir. Surfaces git's stderr on failure (hooks,
+  nothing staged, detached HEAD, etc.).
+- **.gitignore awareness** — `reasonix code` reads the project's
+  `.gitignore` on launch and injects it into the system prompt as
+  "don't traverse or edit these paths unless asked". Hard-coded
+  baseline ignores (`node_modules`, `dist`, `.git`, `.venv`, etc.) are
+  also baked into the base prompt for projects without a `.gitignore`.
+  Stops the model wasting 5 tool calls listing `node_modules`.
+
+### Tightened
+
+- **`CODE_SYSTEM_PROMPT` gains a "when to edit vs. when to explore"
+  section.** Explicitly tells the model: only propose edits when the
+  user asks to change / fix / add / remove / refactor. For analyze /
+  explain / describe, stay read-only. Belt-and-braces with the
+  `/apply` gate below.
+
+### Tests (+35, suite 292→318)
+
+- `tests/edit-blocks.test.ts` (+5) — `snapshotBeforeEdits` +
+  `restoreSnapshots` round-trip: restore modified file, delete
+  newly-created file on undo, de-dup per path in batches, refuse
+  path-escape in snapshots.
+- `tests/code-prompt.test.ts` (+4 new file) — `.gitignore` injection:
+  no-file case, happy path, truncation over 2KB, base prompt still
+  names the built-in ignores.
+- `tests/slash.test.ts` (+13) — `/apply`, `/discard`, `/undo`,
+  `/commit`: inside vs. outside code mode, usage hint on empty
+  message, double-quote stripping, help listing all of them.
+- `tests/loop.test.ts` (+1) — context-guard warning + forced-summary
+  flag when prompt tokens exceed 80% of the window.
+- `tests/markdown.test.ts` (+5) — `parseBlocks` extracts SEARCH/
+  REPLACE into `edit-block` blocks, preserves multi-line JSDoc
+  verbatim, handles new-file (empty SEARCH), rejects stray markers
+  without close, multi-block responses interleaved with prose.
+- `tests/loop.test.ts` (+1) — `tool_start` precedes `tool` for each
+  dispatch, so UI consumers can pair them.
+
+### Notes
+
+- If you relied on 0.4.0's auto-apply behavior in scripts, that's
+  gone. For automation, call `applyEditBlocks` directly from the
+  library — the CLI TUI is for interactive use where the new gate
+  is correct.
+
+---
+
 ## [0.4.0] — 2026-04-21
 
 **Headline:** `reasonix code` — a new subcommand that turns Reasonix

@@ -156,6 +156,48 @@ describe("CacheFirstLoop (non-streaming)", () => {
     expect(loop.stats.turns.length).toBe(2); // two model round-trips
   });
 
+  it("yields tool_start before each tool dispatch so the TUI can show 'running…'", async () => {
+    const client = makeClient([
+      {
+        content: "",
+        tool_calls: [
+          {
+            id: "call_1",
+            type: "function",
+            function: { name: "add", arguments: '{"a":1,"b":2}' },
+          },
+        ],
+      },
+      { content: "done" },
+    ]);
+    const tools = new ToolRegistry();
+    tools.register<{ a: number; b: number }, number>({
+      name: "add",
+      parameters: {
+        type: "object",
+        properties: { a: { type: "integer" }, b: { type: "integer" } },
+        required: ["a", "b"],
+      },
+      fn: ({ a, b }) => a + b,
+    });
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "s", toolSpecs: tools.specs() }),
+      tools,
+      stream: false,
+    });
+
+    const roleOrder: { role: string; toolName?: string }[] = [];
+    for await (const ev of loop.step("go")) {
+      if (ev.role === "tool_start" || ev.role === "tool") {
+        roleOrder.push({ role: ev.role, toolName: ev.toolName });
+      }
+    }
+    // tool_start must precede the matching tool result.
+    expect(roleOrder[0]).toEqual({ role: "tool_start", toolName: "add" });
+    expect(roleOrder[1]).toEqual({ role: "tool", toolName: "add" });
+  });
+
   it("immutable prefix is preserved across turns (cache-stability invariant)", async () => {
     const sharedFetch = fakeFetch([{ content: "a" }, { content: "b" }]);
     const client = new DeepSeekClient({ apiKey: "sk-test", fetch: sharedFetch });
@@ -316,6 +358,58 @@ describe("CacheFirstLoop (non-streaming)", () => {
     expect(summary!.content).toContain("done — here's what I found.");
     // Last event is still `done`, preserving the contract used by run().
     expect(events[events.length - 1]!.role).toBe("done");
+  });
+
+  it("context-guard diverts to summary when promptTokens > 80% of the window, tagging forcedSummary", async () => {
+    const reg = new ToolRegistry();
+    reg.register({
+      name: "probe",
+      description: "no-op",
+      parameters: { type: "object", properties: {} },
+      fn: async () => "ok",
+    });
+    // First response: chaining tool call with a prompt-token count
+    // deliberately over 80% of DeepSeek's 131k window (131k * 0.8 = 104_857).
+    // 120k trips the guard.
+    const responses: FakeResponseShape[] = [
+      {
+        content: "",
+        tool_calls: [{ id: "c", type: "function", function: { name: "probe", arguments: "{}" } }],
+        usage: {
+          prompt_tokens: 120_000,
+          completion_tokens: 50,
+          total_tokens: 120_050,
+          prompt_cache_hit_tokens: 90_000,
+          prompt_cache_miss_tokens: 30_000,
+        },
+      },
+      // Forced-summary response (no tools)
+      { content: "based on what I saw, X." },
+    ];
+    const client = makeClient(responses);
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "s", toolSpecs: reg.specs() }),
+      tools: reg,
+      stream: false,
+      maxToolIters: 64,
+    });
+
+    const events: { role: string; forcedSummary?: boolean; content?: string }[] = [];
+    for await (const ev of loop.step("analyze the repo")) {
+      events.push({ role: ev.role, forcedSummary: ev.forcedSummary, content: ev.content });
+    }
+
+    // A warning must fire about the context guard.
+    const warn = events.find((e) => e.role === "warning");
+    expect(warn).toBeDefined();
+    expect(warn!.content).toMatch(/context \d+\/\d+/);
+
+    // The final assistant_final must be tagged forcedSummary and carry the context-guard prefix.
+    const finals = events.filter((e) => e.role === "assistant_final");
+    const summary = finals[finals.length - 1];
+    expect(summary!.forcedSummary).toBe(true);
+    expect(summary!.content).toMatch(/context budget running low/);
   });
 
   it("surfaces an error event when the HTTP call fails with a non-retryable status", async () => {
