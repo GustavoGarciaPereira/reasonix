@@ -3,6 +3,57 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0-alpha.3] — 2026-04-22
+
+**Headline:** multi-server MCP + discovery command. Bridge two or more
+MCP servers into one chat session, and stop guessing what servers exist
+— `reasonix mcp list` prints a curated catalog with copy-paste commands.
+
+### Added
+
+- **Repeatable `--mcp`** — pass the flag multiple times to bridge
+  multiple MCP servers into the same `ToolRegistry`. New spec syntax:
+    `"name=cmd args..."`   → tools land namespaced as `name_toolname`
+    `"cmd args..."`        → anonymous (tools keep native names)
+  Example:
+    ```
+    reasonix chat \
+      --mcp "fs=npx -y @modelcontextprotocol/server-filesystem /tmp/safe" \
+      --mcp "mem=npx -y @modelcontextprotocol/server-memory"
+    ```
+  Tools show up as `fs_read_file`, `mem_set`, etc.
+- **`reasonix mcp list`** — curated catalog of popular official MCP
+  servers (filesystem / fetch / github / memory / sqlite / puppeteer /
+  everything) with ready-to-paste `--mcp` commands. Hardcoded because
+  the list changes slowly; fetching over the network would make it
+  flaky offline. `--json` prints the machine-readable form.
+- `src/mcp/spec.ts::parseMcpSpec` — small helper exposed if library
+  callers want the same `name=cmd` parsing. Not exported from the
+  barrel yet; can be promoted when there's demand.
+- `src/mcp/catalog.ts::MCP_CATALOG` — the curated list.
+
+### Fixed
+
+- **`shellSplit` mangled Windows paths outside quotes.** Backslashes
+  were being treated as POSIX escape chars, so `C:\path\to\dir` turned
+  into `C:pathtodir`. Now backslashes only escape inside double
+  quotes; outside, they pass through literally. Matches user
+  expectation on Windows; POSIX users who want escape-a-space should
+  quote the arg instead.
+
+### Tests
+
+- `parseMcpSpec` (+8) — name=cmd form, anonymous form, Windows drive
+  letters (must not look like namespace), identifier edge cases,
+  empty / malformed input.
+- Multi-server integration test (+1) — spawn two demo subprocesses
+  concurrently with different prefixes, dispatch to each, verify no
+  cross-talk.
+- `shellSplit` Windows-path behavior (+1).
+- Suite: **233 passing** (was 224).
+
+---
+
 ## [0.3.0-alpha.2] — 2026-04-22
 
 **Headline:** Windows `--mcp` actually works now, plus a second live
@@ -297,6 +348,7 @@ branching, and session persistence. They're not reflected as individual
 entries above because the `0.1.0` bench harness is what first produced
 *externally verifiable* evidence for their value.
 
+[0.3.0-alpha.3]: https://github.com/esengine/reasonix/releases/tag/v0.3.0-alpha.3
 [0.3.0-alpha.2]: https://github.com/esengine/reasonix/releases/tag/v0.3.0-alpha.2
 [0.3.0-alpha.1]: https://github.com/esengine/reasonix/releases/tag/v0.3.0-alpha.1
 [0.2.2]: https://github.com/esengine/reasonix/releases/tag/v0.2.2

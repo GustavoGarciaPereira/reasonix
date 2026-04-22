@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { VERSION } from "../index.js";
 import { chatCommand } from "./commands/chat.js";
 import { diffCommand } from "./commands/diff.js";
+import { mcpListCommand } from "./commands/mcp.js";
 import { replayCommand } from "./commands/replay.js";
 import { runCommand } from "./commands/run.js";
 import { sessionsCommand } from "./commands/sessions.js";
@@ -161,6 +162,18 @@ program
       print: !!opts.print,
       tui: !!opts.tui,
     });
+  });
+
+const mcp = program
+  .command("mcp")
+  .description("Model Context Protocol helpers — discover servers, test your setup.");
+
+mcp
+  .command("list")
+  .description("Show a curated catalog of popular MCP servers with ready-to-use --mcp commands.")
+  .option("--json", "Emit the catalog as JSON instead of the human-readable table")
+  .action((opts) => {
+    mcpListCommand({ json: !!opts.json });
   });
 
 program.command("version").description("Print Reasonix version.").action(versionCommand);

@@ -117,15 +117,19 @@ npx reasonix replay benchmarks/tau-bench/transcripts/mcp-filesystem.jsonl
 **Reproduce with your own key** (live, ~$0.002):
 
 ```bash
-reasonix chat --mcp "node --import tsx examples/mcp-server-demo.ts"
-# or against the real filesystem server:
-reasonix chat --mcp "npx -y @modelcontextprotocol/server-filesystem /path/to/safe/dir"
+# Don't know what MCP servers exist? Start here:
+reasonix mcp list
+# Prints a curated catalog (filesystem, fetch, github, sqlite, …) with
+# ready-to-paste --mcp commands.
+
+# One server:
+reasonix chat --mcp "filesystem=npx -y @modelcontextprotocol/server-filesystem /tmp/safe"
 
 # Multiple servers at once — each gets its own namespace prefix:
 reasonix chat \
   --mcp "fs=npx -y @modelcontextprotocol/server-filesystem /tmp/safe" \
-  --mcp "demo=node --import tsx examples/mcp-server-demo.ts"
-# Tools land in a shared registry as fs_read_file, demo_add, etc.
+  --mcp "mem=npx -y @modelcontextprotocol/server-memory"
+# Tools land in a shared registry as fs_read_file, mem_set, etc.
 ```
 
 [mcp]: ./benchmarks/tau-bench/transcripts/mcp-demo.add.jsonl
