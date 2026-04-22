@@ -316,7 +316,11 @@ export function resolveExecutable(cmd: string, opts: ResolveExecutableOptions = 
 
   for (const dir of pathDirs) {
     for (const ext of pathExt) {
-      const full = pathMod.join(dir, cmd + ext);
+      // Force win32 join so CI tests that pass `platform: "win32"`
+      // from a Linux runner get backslash-joined paths; the real-
+      // Windows runtime path lands here too and gets the correct
+      // separator regardless of where pathMod defaults.
+      const full = pathMod.win32.join(dir, cmd + ext);
       if (isFile(full)) return full;
     }
   }
