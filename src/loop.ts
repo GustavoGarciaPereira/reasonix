@@ -34,6 +34,15 @@ export type EventRole =
   | "done"
   | "error"
   | "warning"
+  /**
+   * Transient "what's happening right now" indicator. Emitted during
+   * silent phases — between a tool result and the next iteration's
+   * first streaming byte, and right before harvest — so the TUI can
+   * show a spinner with explanatory text instead of looking frozen.
+   * The UI clears it on the next primary event (assistant_delta,
+   * tool_start, tool, assistant_final, error).
+   */
+  | "status"
   | "branch_start"
   | "branch_progress"
   | "branch_done";
@@ -415,6 +424,25 @@ export class CacheFirstLoop {
         yield { turn: this._turn, role: "done", content: stoppedMsg };
         return;
       }
+      // Bridge the silence between the PREVIOUS iter's tool result and
+      // THIS iter's first streaming byte. R1 can spend 20-90s reasoning
+      // about tool output before the first delta lands, and prior to
+      // this hint the UI had nothing to render. Only emit on iter > 0
+      // because iter 0's "thinking" phase is already covered by the
+      // streaming row / StreamingAssistant's placeholder.
+      //
+      // Wording is explicit about the two things happening: the tool
+      // result IS being uploaded (it's now part of the next prompt) and
+      // the model IS thinking. Users were reading "thinking about the
+      // tool result" as the model-only phase, but the wait also covers
+      // the upload round-trip.
+      if (iter > 0) {
+        yield {
+          turn: this._turn,
+          role: "status",
+          content: "tool result uploaded · model thinking before next response…",
+        };
+      }
       if (!warnedForIterBudget && iter >= warnAt) {
         warnedForIterBudget = true;
         yield {
@@ -595,10 +623,25 @@ export class CacheFirstLoop {
       }
 
       this.scratch.reasoning = reasoningContent || null;
+      // Harvest is a second API round-trip (cheap model, but still
+      // 1-10s) that was previously silent. Bridge the gap with a
+      // status indicator so the TUI shows *something* instead of
+      // "reasoning finished, now staring at the wall."
+      if (
+        !preHarvestedPlanState &&
+        this.harvestEnabled &&
+        (reasoningContent?.trim().length ?? 0) >= 40
+      ) {
+        yield {
+          turn: this._turn,
+          role: "status",
+          content: "extracting plan state from reasoning…",
+        };
+      }
       const planState = preHarvestedPlanState
         ? preHarvestedPlanState
         : this.harvestEnabled
-          ? await harvest(reasoningContent || null, this.client, this.harvestOptions)
+          ? await harvest(reasoningContent || null, this.client, this.harvestOptions, signal)
           : emptyPlanState();
 
       const { calls: repairedCalls, report } = this.repair.process(
@@ -689,6 +732,14 @@ export class CacheFirstLoop {
     opts: { reason: "budget" | "aborted" | "context-guard" } = { reason: "budget" },
   ): AsyncGenerator<LoopEvent> {
     try {
+      // The summary call is non-streaming (reasoner, 30-60s typical).
+      // Without this status the user sees nothing happening after the
+      // yellow "budget reached" warning until the summary arrives.
+      yield {
+        turn: this._turn,
+        role: "status",
+        content: "summarizing what was gathered…",
+      };
       const messages = this.buildMessages(null);
       // Passing `tools: undefined` was supposed to force a text
       // response, but R1 can still hallucinate tool-call markup

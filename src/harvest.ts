@@ -68,8 +68,12 @@ export async function harvest(
   reasoningContent: string | null | undefined,
   client?: DeepSeekClient,
   options: HarvestOptions = {},
+  signal?: AbortSignal,
 ): Promise<TypedPlanState> {
   if (!client || !reasoningContent) return emptyPlanState();
+  // Fast-path the already-aborted case so we don't burn a network
+  // round-trip for a result the caller no longer wants.
+  if (signal?.aborted) return emptyPlanState();
   const minLen = options.minReasoningLen ?? 40;
   const trimmed = reasoningContent.trim();
   if (trimmed.length < minLen) return emptyPlanState();
@@ -92,6 +96,7 @@ export async function harvest(
       responseFormat: { type: "json_object" },
       temperature: 0,
       maxTokens: 600,
+      signal,
     });
     return parsePlanState(resp.content, maxItems, maxItemLen);
   } catch {

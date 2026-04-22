@@ -159,3 +159,67 @@ describe("parseBlocks — SEARCH/REPLACE detection", () => {
     );
   });
 });
+
+describe("parseBlocks — GFM tables", () => {
+  it("recognizes a simple table with header + separator + rows", () => {
+    const md = [
+      "Intro paragraph.",
+      "",
+      "| 声望点 | 加成效果 |",
+      "|--------|----------|",
+      "| 每2点 | +1 点击力 |",
+      "| 每3点 | +10% CPS 乘数 |",
+      "",
+      "Trailing text.",
+    ].join("\n");
+    const blocks = parseBlocks(md);
+    const table = blocks.find((b) => b.kind === "table");
+    expect(table).toBeDefined();
+    if (table && table.kind === "table") {
+      expect(table.header).toEqual(["声望点", "加成效果"]);
+      expect(table.rows).toHaveLength(2);
+      expect(table.rows[0]).toEqual(["每2点", "+1 点击力"]);
+      expect(table.rows[1]).toEqual(["每3点", "+10% CPS 乘数"]);
+    }
+    // Surrounding paragraphs still parsed as separate blocks.
+    expect(
+      blocks.find((b) => b.kind === "paragraph" && b.text === "Intro paragraph."),
+    ).toBeDefined();
+    expect(blocks.find((b) => b.kind === "paragraph" && b.text === "Trailing text.")).toBeDefined();
+  });
+
+  it("accepts alignment colons in the separator without breaking", () => {
+    const md = ["| col1 | col2 |", "|:-----|-----:|", "| a    | b    |"].join("\n");
+    const [t] = parseBlocks(md).filter((b) => b.kind === "table");
+    expect(t).toBeDefined();
+    if (t && t.kind === "table") {
+      expect(t.header).toEqual(["col1", "col2"]);
+      expect(t.rows[0]).toEqual(["a", "b"]);
+    }
+  });
+
+  it("accepts tables without leading/trailing pipes", () => {
+    const md = ["col1 | col2", "-----|-----", "a    | b"].join("\n");
+    const [t] = parseBlocks(md).filter((b) => b.kind === "table");
+    expect(t).toBeDefined();
+    if (t && t.kind === "table") {
+      expect(t.header).toEqual(["col1", "col2"]);
+      expect(t.rows[0]).toEqual(["a", "b"]);
+    }
+  });
+
+  it("does NOT trigger on a bare '|' in prose when next line is not a separator", () => {
+    const md = ["Use the pipe | operator to chain.", "Second paragraph."].join("\n");
+    const blocks = parseBlocks(md);
+    expect(blocks.find((b) => b.kind === "table")).toBeUndefined();
+  });
+
+  it("preserves escaped pipes inside cell content", () => {
+    const md = ["| a | b |", "|---|---|", "| x \\| y | z |"].join("\n");
+    const [t] = parseBlocks(md).filter((b) => b.kind === "table");
+    expect(t).toBeDefined();
+    if (t && t.kind === "table") {
+      expect(t.rows[0]).toEqual(["x | y", "z"]);
+    }
+  });
+});

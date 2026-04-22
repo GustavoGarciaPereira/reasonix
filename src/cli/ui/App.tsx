@@ -109,6 +109,16 @@ export function App({
     total?: number;
     message?: string;
   } | null>(null);
+  // Transient "what's happening" text set by the loop during silent
+  // phases (harvest round-trip, between-iteration R1 thinking, forced
+  // summary). Rendered as a dim spinner row; auto-cleared on the next
+  // primary event.
+  const [statusLine, setStatusLine] = useState<string | null>(null);
+  // DeepSeek account balance — fetched once on mount, refreshed after
+  // each completed turn so the "how much do I have left" number
+  // tracks reality. `null` means either the endpoint failed or we
+  // haven't fetched yet; the panel hides the cell in that case.
+  const [balance, setBalance] = useState<{ currency: string; total: number } | null>(null);
   // Snapshots of every file the *last* edit batch touched, keyed by
   // nothing more than "most recent". `/undo` restores from this ref
   // and nulls it out — one level of undo, Aider-style. Multi-step
@@ -140,6 +150,8 @@ export function App({
   const [summary, setSummary] = useState<SessionSummary>({
     turns: 0,
     totalCostUsd: 0,
+    totalInputCostUsd: 0,
+    totalOutputCostUsd: 0,
     claudeEquivalentUsd: 0,
     savingsVsClaudePct: 0,
     cacheHitRatio: 0,
@@ -192,6 +204,23 @@ export function App({
     loopRef.current = l;
     return l;
   }, [model, system, harvest, branch, session, tools]);
+
+  // Fetch balance once the API key is known. Non-blocking — the
+  // session works without it; `null` hides the cell. We also refresh
+  // after each completed turn (inside handleSubmit's finally) so the
+  // number tracks actual spend rather than freezing at mount-time.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const bal = await loop.client.getBalance().catch(() => null);
+      if (cancelled || !bal || !bal.balance_infos.length) return;
+      const primary = bal.balance_infos[0]!;
+      setBalance({ currency: primary.currency, total: Number(primary.total_balance) });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loop]);
 
   // Wire the shared progressSink so the bridge's onProgress → us.
   // Only updates progress when the frame belongs to the currently-
@@ -473,7 +502,17 @@ export function App({
       try {
         for await (const ev of loop.step(text)) {
           writeTranscript(ev);
-          if (ev.role === "assistant_delta") {
+          // Status lines are transient — any primary event (streaming
+          // starts, a tool fires, etc.) means whatever we were waiting
+          // FOR has now arrived, so drop the hint. We do this uniformly
+          // at the top of the loop body for every role except "status"
+          // itself (which SETS the line).
+          if (ev.role !== "status") {
+            setStatusLine((cur) => (cur ? null : cur));
+          }
+          if (ev.role === "status") {
+            setStatusLine(ev.content);
+          } else if (ev.role === "assistant_delta") {
             if (ev.content) contentBuf.current += ev.content;
             if (ev.reasoningDelta) reasoningBuf.current += ev.reasoningDelta;
           } else if (ev.role === "branch_start") {
@@ -500,6 +539,12 @@ export function App({
             flush();
             const repairNote = ev.repair ? describeRepair(ev.repair) : "";
             setStreaming(null);
+            // Update the live stats panel every assistant_final — this is
+            // where the loop already recorded per-iter usage. Without
+            // this, cost/ctx/cache/hit stay at the PRIOR turn's numbers
+            // until the whole step resolves, which is especially
+            // confusing in multi-iter tool-call chains.
+            setSummary(loop.stats.summary());
             const finalText = ev.content || streamRef.text;
             setHistorical((prev) => [
               ...prev,
@@ -580,8 +625,17 @@ export function App({
         setStreaming(null);
         setOngoingTool(null);
         setToolProgress(null);
+        setStatusLine(null);
         setSummary(loop.stats.summary());
         setBusy(false);
+        // Refresh balance lazily — don't block the return.
+        void (async () => {
+          const bal = await loop.client.getBalance().catch(() => null);
+          if (bal?.balance_infos.length) {
+            const p = bal.balance_infos[0]!;
+            setBalance({ currency: p.currency, total: Number(p.total_balance) });
+          }
+        })();
       }
     },
     [
@@ -607,6 +661,7 @@ export function App({
         prefixHash={prefixHash}
         harvestOn={loop.harvestEnabled}
         branchBudget={loop.branchOptions.budget}
+        balance={balance}
       />
       <Static items={historical}>{(item) => <EventRow key={item.id} event={item} />}</Static>
       {streaming ? (
@@ -615,6 +670,16 @@ export function App({
         </Box>
       ) : null}
       {ongoingTool ? <OngoingToolRow tool={ongoingTool} progress={toolProgress} /> : null}
+      {!ongoingTool && statusLine ? <StatusRow text={statusLine} /> : null}
+      {/*
+        Belt-and-suspenders fallback: if we're busy but NONE of the
+        specific indicators (streaming, ongoingTool, statusLine) is
+        visible, something is still happening — show a generic
+        "processing…" so the user never stares at a silent ticker
+        without a label. Catches micro-gaps between events that the
+        targeted status lines don't cover.
+      */}
+      {busy && !streaming && !ongoingTool && !statusLine ? <StatusRow text="processing…" /> : null}
       <PromptInput value={input} onChange={setInput} onSubmit={handleSubmit} disabled={busy} />
       <SlashSuggestions matches={slashMatches} selectedIndex={slashSelected} />
     </Box>
@@ -636,6 +701,36 @@ export function App({
  * (`notifications/progress`) land here too — bar + "n/N" when the
  * server reports a total, free-form message when not.
  */
+/**
+ * Transient "what's happening now" row shown during silent phases
+ * between the primary events — harvest round-trip, R1 thinking
+ * about a tool result before the next streaming delta, forced
+ * summary. Matches OngoingToolRow's visual language (braille
+ * spinner + elapsed seconds) so the user's eyes track the same
+ * spot regardless of which kind of wait it is.
+ */
+function StatusRow({ text }: { text: string }) {
+  const [tick, setTick] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const start = Date.now();
+    const frameId = setInterval(() => setTick((t) => t + 1), 120);
+    const secId = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => {
+      clearInterval(frameId);
+      clearInterval(secId);
+    };
+  }, []);
+  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  return (
+    <Box marginY={1}>
+      <Text color="magenta">{frames[tick % frames.length]}</Text>
+      <Text color="magenta">{` ${text}`}</Text>
+      <Text dimColor>{` ${elapsed}s`}</Text>
+    </Box>
+  );
+}
+
 function OngoingToolRow({
   tool,
   progress,

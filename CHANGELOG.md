@@ -3,6 +3,102 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.10] — 2026-04-22
+
+**Headline:** Fills the "silent wait" gaps users were hitting —
+transient status indicator between iterations + before harvest, live
+stats refresh per iter (not per turn), account balance cell,
+in/out cost split, Esc now interrupts harvest too, `edit_file`
+returns a real diff. Drops the misleading "vs Claude / saving"
+numbers.
+
+### Added
+
+- **`status` loop event** + `StatusRow` component — a magenta
+  spinner row that fills silent phases with explicit text:
+  - `"thinking about the tool result…"` between iterations, while
+    R1 reasons about a just-finished tool output before emitting
+    the next turn's first streaming byte
+  - `"extracting plan state from reasoning…"` right before the
+    silent harvest round-trip (1-10s on the cheap model)
+  - `"summarizing what was gathered…"` before the forced-summary
+    call (budget / context-guard)
+  Auto-clears on the next primary event.
+- **Account balance cell** in the stats panel. `DeepSeekClient.getBalance()`
+  hits `/user/balance` (separate endpoint, no billing impact).
+  Fetched at launch + refreshed after each completed turn. Hides
+  the cell on failure so the session works without it.
+- **Input / output cost split** — panel now reads
+  `cost $X (in $Y · out $Z)` so users can see where their spend
+  lands without guessing. `SessionSummary` gains `totalInputCostUsd`
+  and `totalOutputCostUsd`; `inputCostUsd()` and `outputCostUsd()`
+  exposed as library utilities.
+- **Inline diff in `edit_file` tool result** — every edit returns a
+  unified-style `- old / + new` block so you can see *what* changed
+  without running `git diff`. Long blocks are truncated in the
+  spinner row with a `… (N more lines)` marker; `/tool N` still
+  shows the full result.
+- **Live stats refresh per assistant_final** — previously the
+  panel only updated in the `finally` block at end-of-turn;
+  multi-iter tool chains stayed frozen at the prior turn's numbers
+  for 30-60s at a time. Now the cost/ctx/cache hit gauges update
+  as each iteration's usage is recorded.
+- **Stronger pre-first-byte hint** — streaming row now reads
+  `(request sent · waiting for server)` with a concrete estimate,
+  replacing the ambiguous `(streaming · 0 chars)`.
+
+### Changed
+
+- **Esc now also interrupts `harvest()`.** The cheap-model
+  round-trip that extracts plan state was the last remaining
+  un-signaled API call. Threaded `AbortSignal` through. Fast-path
+  returns `emptyPlanState` when the signal is already aborted so
+  the caller unblocks without a network burn.
+
+### Removed
+
+- **"vs Claude / saving" cells from the panel.** The savings
+  percentage was a synthetic ratio against static Claude pricing,
+  not a measured comparison — users fairly pointed out it reads
+  like made-up marketing. The summary shape still carries
+  `claudeEquivalentUsd` + `savingsVsClaudePct` for benchmark /
+  replay compat but they're deprecated and no longer surfaced in
+  chat.
+
+### Also added in 0.4.10 (same release)
+
+- **GFM markdown tables** in assistant output. `parseBlocks` now
+  recognizes `| col | col |` + separator + data rows and renders
+  them as aligned columns with `│` dividers. Handles alignment
+  colons (`:---`, `---:`), escaped pipes, and leading-pipe-free
+  variants. CJK-width-aware column padding so Chinese and English
+  tables both align correctly.
+- **"processing…" fallback indicator** — if the loop is busy but
+  none of the targeted indicators (streaming row, ongoingTool,
+  statusLine) are visible, a generic magenta spinner row fills the
+  gap. Belt-and-suspenders: no more silent clock-ticks.
+- **Clearer between-iter status wording** — changed from "thinking
+  about the tool result…" (which sounded like a model-only phase)
+  to "tool result uploaded · model thinking before next response…"
+  so it's obvious the wait covers both the upload round-trip and
+  the model's thinking time.
+
+### Tests (+11, suite 416→427)
+
+- `tests/telemetry.test.ts` (+4) — `inputCostUsd` covers cache-hit
+  + cache-miss but not completion; `outputCostUsd` covers
+  completion only; both return 0 for unknown models;
+  `totalInputCostUsd + totalOutputCostUsd == totalCostUsd`.
+- `tests/filesystem-tools.test.ts` (+2) — `edit_file` returns an
+  inline `- search / + replace` diff; huge edit blocks get
+  `… (N more lines)` marker in the middle.
+- `tests/markdown.test.ts` (+5) — simple table with CJK header +
+  cells, alignment-colon separators accepted, pipe-less headers
+  accepted, bare `|` in prose doesn't false-trigger, escaped `\|`
+  preserved inside cells.
+
+---
+
 ## [0.4.9] — 2026-04-22
 
 **Headline:** Three user-reported issues fixed together: Esc now

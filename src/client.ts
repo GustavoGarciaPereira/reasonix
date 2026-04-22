@@ -45,6 +45,25 @@ export interface StreamChunk {
   raw: any;
 }
 
+/**
+ * Response shape for DeepSeek's `/user/balance` endpoint. One entry
+ * per currency the account is funded in (typically CNY, sometimes
+ * USD). `total_balance` is the spendable figure; `granted_balance`
+ * counts promotional credits that expire, `topped_up_balance` is
+ * what the user paid for and keeps.
+ */
+export interface BalanceInfo {
+  currency: string;
+  total_balance: string;
+  granted_balance?: string;
+  topped_up_balance?: string;
+}
+
+export interface UserBalance {
+  is_available: boolean;
+  balance_infos: BalanceInfo[];
+}
+
 export interface DeepSeekClientOptions {
   apiKey?: string;
   baseUrl?: string;
@@ -90,6 +109,28 @@ export class DeepSeekClient {
     if (opts.maxTokens !== undefined) payload.max_tokens = opts.maxTokens;
     if (opts.responseFormat) payload.response_format = opts.responseFormat;
     return payload;
+  }
+
+  /**
+   * Fetch the current DeepSeek account balance. Separate endpoint
+   * from chat completions, no billing impact. Returns null on any
+   * network/auth failure so callers can gate the balance display
+   * without a hard error — the rest of the session works regardless.
+   */
+  async getBalance(opts: { signal?: AbortSignal } = {}): Promise<UserBalance | null> {
+    try {
+      const resp = await this._fetch(`${this.baseUrl}/user/balance`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+        signal: opts.signal,
+      });
+      if (!resp.ok) return null;
+      const data = (await resp.json()) as UserBalance;
+      if (!data || !Array.isArray(data.balance_infos)) return null;
+      return data;
+    } catch {
+      return null;
+    }
   }
 
   async chat(opts: ChatRequestOptions): Promise<ChatResponse> {

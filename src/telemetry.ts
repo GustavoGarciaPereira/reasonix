@@ -37,6 +37,24 @@ export function costUsd(model: string, usage: Usage): number {
   );
 }
 
+/** Input-side cost only (prompt, cache hit + miss). Used for the panel breakdown. */
+export function inputCostUsd(model: string, usage: Usage): number {
+  const p = DEEPSEEK_PRICING[model];
+  if (!p) return 0;
+  return (
+    (usage.promptCacheHitTokens * p.inputCacheHit +
+      usage.promptCacheMissTokens * p.inputCacheMiss) /
+    1_000_000
+  );
+}
+
+/** Output-side cost only (completion tokens). Used for the panel breakdown. */
+export function outputCostUsd(model: string, usage: Usage): number {
+  const p = DEEPSEEK_PRICING[model];
+  if (!p) return 0;
+  return (usage.completionTokens * p.output) / 1_000_000;
+}
+
 export function claudeEquivalentCost(usage: Usage): number {
   return (
     (usage.promptTokens * CLAUDE_SONNET_PRICING.input +
@@ -56,7 +74,17 @@ export interface TurnStats {
 export interface SessionSummary {
   turns: number;
   totalCostUsd: number;
+  /**
+   * Input-side (prompt) cost aggregated across the session. Split
+   * from totalCostUsd so the panel can render "cost $X (in $Y · out
+   * $Z)" — users asked for visibility into where the spend lands.
+   */
+  totalInputCostUsd: number;
+  /** Output-side (completion) cost aggregated across the session. */
+  totalOutputCostUsd: number;
+  /** @deprecated Claude reference; kept for benchmarks + replay compat, no longer surfaced in the TUI. */
   claudeEquivalentUsd: number;
+  /** @deprecated. Same as claudeEquivalentUsd — synthetic ratio, not a real measurement. */
   savingsVsClaudePct: number;
   cacheHitRatio: number;
   /**
@@ -97,6 +125,14 @@ export class SessionStats {
     return c > 0 ? 1 - this.totalCost / c : 0;
   }
 
+  get totalInputCost(): number {
+    return this.turns.reduce((sum, t) => sum + inputCostUsd(t.model, t.usage), 0);
+  }
+
+  get totalOutputCost(): number {
+    return this.turns.reduce((sum, t) => sum + outputCostUsd(t.model, t.usage), 0);
+  }
+
   get aggregateCacheHitRatio(): number {
     let hit = 0;
     let miss = 0;
@@ -113,6 +149,8 @@ export class SessionStats {
     return {
       turns: this.turns.length,
       totalCostUsd: round(this.totalCost, 6),
+      totalInputCostUsd: round(this.totalInputCost, 6),
+      totalOutputCostUsd: round(this.totalOutputCost, 6),
       claudeEquivalentUsd: round(this.totalClaudeEquivalent, 6),
       savingsVsClaudePct: round(this.savingsVsClaude * 100, 2),
       cacheHitRatio: round(this.aggregateCacheHitRatio, 4),

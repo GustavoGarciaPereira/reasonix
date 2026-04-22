@@ -10,7 +10,14 @@
  */
 
 import { Usage } from "./client.js";
-import { type SessionSummary, type TurnStats, claudeEquivalentCost, costUsd } from "./telemetry.js";
+import {
+  type SessionSummary,
+  type TurnStats,
+  claudeEquivalentCost,
+  costUsd,
+  inputCostUsd,
+  outputCostUsd,
+} from "./telemetry.js";
 import { type ReadTranscriptResult, type TranscriptRecord, readTranscript } from "./transcript.js";
 
 /**
@@ -142,6 +149,8 @@ export function computeReplayStats(records: TranscriptRecord[]): ReplayStats {
 
 function summarizeTurns(turns: TurnStats[]): SessionSummary {
   const totalCost = turns.reduce((s, t) => s + t.cost, 0);
+  const totalInput = turns.reduce((s, t) => s + inputCostUsd(t.model, t.usage), 0);
+  const totalOutput = turns.reduce((s, t) => s + outputCostUsd(t.model, t.usage), 0);
   const totalClaude = turns.reduce((s, t) => s + claudeEquivalentCost(t.usage), 0);
   let hit = 0;
   let miss = 0;
@@ -155,6 +164,8 @@ function summarizeTurns(turns: TurnStats[]): SessionSummary {
   return {
     turns: turns.length,
     totalCostUsd: round(totalCost, 6),
+    totalInputCostUsd: round(totalInput, 6),
+    totalOutputCostUsd: round(totalOutput, 6),
     claudeEquivalentUsd: round(totalClaude, 6),
     savingsVsClaudePct: round(savingsVsClaude * 100, 2),
     cacheHitRatio: round(cacheHitRatio, 4),

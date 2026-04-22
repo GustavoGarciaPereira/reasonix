@@ -316,7 +316,14 @@ export function registerFilesystemTools(
       const after =
         before.slice(0, firstIdx) + args.replace + before.slice(firstIdx + args.search.length);
       await fs.writeFile(abs, after, "utf8");
-      return `edited ${pathMod.relative(rootDir, abs)} (${args.search.length}→${args.replace.length} chars)`;
+      const rel = pathMod.relative(rootDir, abs);
+      const header = `edited ${rel} (${args.search.length}→${args.replace.length} chars)`;
+      // Render a compact inline diff so users can see WHAT changed
+      // without running `git diff`. Each SEARCH line → `-`, each
+      // REPLACE line → `+`, matching unified-diff convention. Long
+      // blocks are capped; `/tool N` always gives the full text.
+      const diff = renderEditDiff(args.search, args.replace);
+      return `${header}\n${diff}`;
     },
   });
 
@@ -356,4 +363,30 @@ export function registerFilesystemTools(
   });
 
   return registry;
+}
+
+/**
+ * Format an edit_file change as a compact inline diff. Each SEARCH
+ * line prefixed with `-`, each REPLACE line prefixed with `+`. When
+ * the content is large we keep the head + tail and drop the middle
+ * with a marker so the EventLog row is readable but `/tool N` can
+ * still show the full untruncated result on demand.
+ */
+function renderEditDiff(search: string, replace: string): string {
+  const searchLines = search.split(/\r?\n/);
+  const replaceLines = replace.split(/\r?\n/);
+  const MAX_LINES_SIDE = 12;
+  const clip = (lines: string[]): string[] => {
+    if (lines.length <= MAX_LINES_SIDE) return lines;
+    const headCount = Math.floor(MAX_LINES_SIDE / 2);
+    const tailCount = MAX_LINES_SIDE - headCount - 1;
+    return [
+      ...lines.slice(0, headCount),
+      `  … (${lines.length - headCount - tailCount} more lines)`,
+      ...lines.slice(-tailCount),
+    ];
+  };
+  const minus = clip(searchLines).map((l) => `- ${l}`);
+  const plus = clip(replaceLines).map((l) => `+ ${l}`);
+  return [...minus, ...plus].join("\n");
 }

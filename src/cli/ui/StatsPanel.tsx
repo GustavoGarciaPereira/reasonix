@@ -9,6 +9,15 @@ export interface StatsPanelProps {
   prefixHash: string;
   harvestOn?: boolean;
   branchBudget?: number;
+  /**
+   * Account balance fetched once at launch (and optionally refreshed
+   * per-turn by the TUI). `null` or absent hides the balance cell
+   * entirely — /user/balance failed or the user ran with `--no-config`.
+   * The top-up warning fires below 1.0 unit of whatever currency
+   * the endpoint reports so a Chinese user with CNY and a U.S. user
+   * with USD both see "getting low."
+   */
+  balance?: { currency: string; total: number } | null;
 }
 
 export function StatsPanel({
@@ -17,6 +26,7 @@ export function StatsPanel({
   prefixHash,
   harvestOn,
   branchBudget,
+  balance,
 }: StatsPanelProps) {
   const hitPct = (summary.cacheHitRatio * 100).toFixed(1);
   const hitColor =
@@ -52,16 +62,13 @@ export function StatsPanel({
         </Text>
         <Text>
           <Text dimColor>cost </Text>
-          <Text color="green">${summary.totalCostUsd.toFixed(6)}</Text>
-        </Text>
-        <Text>
-          <Text dimColor>vs Claude </Text>
-          <Text>${summary.claudeEquivalentUsd.toFixed(6)}</Text>
-        </Text>
-        <Text>
-          <Text dimColor>saving </Text>
           <Text color="green" bold>
-            {summary.savingsVsClaudePct.toFixed(1)}%
+            ${summary.totalCostUsd.toFixed(6)}
+          </Text>
+          <Text dimColor>
+            {" (in "}${summary.totalInputCostUsd.toFixed(6)}
+            {" · out "}${summary.totalOutputCostUsd.toFixed(6)}
+            {")"}
           </Text>
         </Text>
         {summary.lastPromptTokens > 0 ? (
@@ -77,6 +84,16 @@ export function StatsPanel({
                 · /compact
               </Text>
             ) : null}
+          </Text>
+        ) : null}
+        {balance ? (
+          <Text>
+            <Text dimColor>balance </Text>
+            <Text color={balance.total < 1 ? "red" : balance.total < 5 ? "yellow" : "green"} bold>
+              {balance.currency === "USD" ? "$" : ""}
+              {balance.total.toFixed(2)}
+              {balance.currency !== "USD" ? ` ${balance.currency}` : ""}
+            </Text>
           </Text>
         ) : null}
       </Box>

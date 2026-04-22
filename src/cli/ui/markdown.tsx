@@ -219,7 +219,27 @@ interface EditBlockView {
   replace: string;
 }
 
-type Block = ParagraphBlock | HeadingBlock | BulletBlock | CodeBlock | HrBlock | EditBlockView;
+/**
+ * GitHub-Flavored-Markdown-ish tables. We don't do alignment flags
+ * (:--- / ---:) — column-wise left-alignment is fine for a terminal
+ * and the LLM rarely specifies alignment anyway. Columns grow to
+ * fit the widest cell, with a hard cap so a pathological 200-char
+ * cell doesn't blow past the terminal width.
+ */
+interface TableBlock {
+  kind: "table";
+  header: string[];
+  rows: string[][];
+}
+
+type Block =
+  | ParagraphBlock
+  | HeadingBlock
+  | BulletBlock
+  | CodeBlock
+  | HrBlock
+  | EditBlockView
+  | TableBlock;
 
 export function parseBlocks(raw: string): Block[] {
   const lines = raw.split(/\r?\n/);
@@ -328,6 +348,31 @@ export function parseBlocks(raw: string): Block[] {
       continue;
     }
 
+    // Table detection: a line with at least one `|` where the NEXT
+    // line looks like a GFM separator (`| --- | --- |` or any mix of
+    // pipes + dashes + colons + spaces). Both the header row and the
+    // separator need to be present — a bare pipe in prose shouldn't
+    // trigger the table path.
+    if (line.includes("|")) {
+      const next = (lines[i + 1] ?? "").trim();
+      if (/^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(next)) {
+        flushPara();
+        flushList();
+        const header = splitTableRow(line);
+        const rows: string[][] = [];
+        let j = i + 2; // skip header + separator
+        while (j < lines.length) {
+          const r = lines[j]!.replace(/\s+$/g, "");
+          if (r.trim() === "" || !r.includes("|")) break;
+          rows.push(splitTableRow(r));
+          j++;
+        }
+        out.push({ kind: "table", header, rows });
+        i = j - 1;
+        continue;
+      }
+    }
+
     const bm = line.match(/^\s*[-*+]\s+(.+)$/);
     if (bm) {
       flushPara();
@@ -391,9 +436,105 @@ function BlockView({ block }: { block: Block }) {
       );
     case "edit-block":
       return <EditBlockRow block={block} />;
+    case "table":
+      return <TableBlockRow block={block} />;
     case "hr":
       return <Text dimColor>{"────────────────────────"}</Text>;
   }
+}
+
+/**
+ * Split one table row into trimmed cells. Leading/trailing pipes are
+ * optional (both `| a | b |` and `a | b` are accepted). Pipes escaped
+ * as `\|` stay in the cell content.
+ */
+function splitTableRow(line: string): string[] {
+  // Temporarily replace escaped pipes so split() doesn't fire on them.
+  const SENTINEL = "\u0000";
+  const masked = line.replace(/\\\|/g, SENTINEL);
+  const trimmed = masked.trim().replace(/^\||\|$/g, "");
+  return trimmed.split("|").map((c) => c.trim().replace(new RegExp(SENTINEL, "g"), "|"));
+}
+
+/**
+ * Render a GFM table as an aligned grid. Column widths are the max
+ * display length in that column, capped at 40 chars so one huge cell
+ * doesn't wreck the layout. Header row is bold + cyan; body rows use
+ * the default text color. Separator is a dim row of dashes.
+ */
+function TableBlockRow({ block }: { block: TableBlock }) {
+  const colCount = Math.max(block.header.length, ...block.rows.map((r) => r.length));
+  const widths: number[] = [];
+  for (let c = 0; c < colCount; c++) {
+    const cellLengths = [displayWidth(block.header[c] ?? "")];
+    for (const r of block.rows) cellLengths.push(displayWidth(r[c] ?? ""));
+    widths.push(Math.min(40, Math.max(3, ...cellLengths)));
+  }
+  const pad = (s: string, w: number) => {
+    const dw = displayWidth(s);
+    if (dw >= w) return s;
+    return s + " ".repeat(w - dw);
+  };
+  const separator = widths.map((w) => "─".repeat(w)).join("─┼─");
+  return (
+    <Box flexDirection="column">
+      <Box>
+        {block.header.map((cell, ci) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: table columns never reorder — derived from a static header array
+          <Text key={`h-${ci}`} bold color="cyan">
+            {pad(cell, widths[ci] ?? 3)}
+            {ci < colCount - 1 ? " │ " : ""}
+          </Text>
+        ))}
+      </Box>
+      <Text dimColor>{separator}</Text>
+      {block.rows.map((row, ri) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: table rows render in source order and don't reorder
+        <Box key={`r-${ri}`}>
+          {Array.from({ length: colCount }).map((_, ci) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: same — column axis is fixed by the table shape
+            <Text key={`c-${ri}-${ci}`}>
+              {pad(row[ci] ?? "", widths[ci] ?? 3)}
+              {ci < colCount - 1 ? " │ " : ""}
+            </Text>
+          ))}
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+/**
+ * Terminal display width of a string, approximately. CJK characters
+ * and full-width punctuation take 2 columns; everything else is 1.
+ * Good enough for aligning table cells in a Chinese-or-English mix;
+ * real wcwidth is bigger than we need to drag in for this use case.
+ */
+function displayWidth(s: string): number {
+  let w = 0;
+  for (const ch of s) {
+    const code = ch.codePointAt(0) ?? 0;
+    // CJK unified ideographs, full-width forms, hiragana/katakana,
+    // Hangul syllables — rough bucket, close enough for the terminal.
+    if (
+      (code >= 0x1100 && code <= 0x115f) ||
+      (code >= 0x2e80 && code <= 0x303e) ||
+      (code >= 0x3041 && code <= 0x33ff) ||
+      (code >= 0x3400 && code <= 0x4dbf) ||
+      (code >= 0x4e00 && code <= 0x9fff) ||
+      (code >= 0xa000 && code <= 0xa4cf) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe30 && code <= 0xfe4f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6)
+    ) {
+      w += 2;
+    } else {
+      w += 1;
+    }
+  }
+  return w;
 }
 
 /**

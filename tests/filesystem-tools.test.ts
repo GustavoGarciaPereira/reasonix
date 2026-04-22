@@ -165,6 +165,31 @@ describe("filesystem tools (built-in, sandbox-enforced)", () => {
       expect(disk).toBe("foo QUX baz");
     });
 
+    it("returns an inline unified diff (- search, + replace)", async () => {
+      await fs.writeFile(join(root, "a.txt"), "keep\nold line\nkeep");
+      const out = await tools.dispatch(
+        "edit_file",
+        JSON.stringify({ path: "a.txt", search: "old line", replace: "new line" }),
+      );
+      expect(out).toMatch(/^edited/m);
+      expect(out).toContain("- old line");
+      expect(out).toContain("+ new line");
+    });
+
+    it("truncates huge search/replace blocks in the displayed diff", async () => {
+      const huge = Array.from({ length: 50 }, (_, i) => `line${i}`).join("\n");
+      const replaced = Array.from({ length: 50 }, (_, i) => `new${i}`).join("\n");
+      await fs.writeFile(join(root, "a.txt"), huge);
+      const out = await tools.dispatch(
+        "edit_file",
+        JSON.stringify({ path: "a.txt", search: huge, replace: replaced }),
+      );
+      // Header still present.
+      expect(out).toMatch(/^edited/m);
+      // Diff truncated with "… (N more lines)" marker.
+      expect(out).toMatch(/more lines/);
+    });
+
     it("refuses when the search text is not found", async () => {
       await fs.writeFile(join(root, "a.txt"), "foo bar");
       const out = await tools.dispatch(

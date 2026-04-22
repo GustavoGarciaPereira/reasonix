@@ -214,6 +214,14 @@ function StreamingAssistant({ event }: { event: DisplayEvent }) {
   // hang. The data is flowing, it's just landing in the thinking
   // channel. Reflect that honestly.
   const reasoningOnly = !event.text && !!event.reasoning;
+  // Pre-first-byte: the request is sent, the connection is open, the
+  // server just hasn't started emitting yet. Call this out explicitly —
+  // previously the display read "streaming · 0 chars" which reads
+  // like a hang.
+  const preFirstByte = !event.text && !event.reasoning;
+  const headerText = preFirstByte
+    ? "request sent · waiting for server"
+    : `${reasoningOnly ? "reasoning" : "streaming"} · ${event.text.length}${event.reasoning ? ` + think ${event.reasoning.length}` : ""} chars`;
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box>
@@ -222,9 +230,9 @@ function StreamingAssistant({ event }: { event: DisplayEvent }) {
         </Text>
         <Pulse />
         <Text dimColor>
-          {" "}
-          ({reasoningOnly ? "reasoning" : "streaming"} · {event.text.length}
-          {event.reasoning ? ` + think ${event.reasoning.length}` : ""} chars){" "}
+          {" ("}
+          {headerText}
+          {") "}
         </Text>
         <Elapsed />
       </Box>
@@ -243,7 +251,7 @@ function StreamingAssistant({ event }: { event: DisplayEvent }) {
         </Text>
       ) : (
         <Text dimColor italic>
-          {"  (waiting for first byte — connection is open)"}
+          {"  connection open, first byte typically in 5-60s depending on model + load"}
         </Text>
       )}
     </Box>

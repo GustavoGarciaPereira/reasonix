@@ -52,6 +52,8 @@ export function ReplayApp({ meta, pages }: ReplayAppProps) {
   const summary = {
     turns: cumStats.turns,
     totalCostUsd: cumStats.totalCostUsd,
+    totalInputCostUsd: cumStats.totalInputCostUsd,
+    totalOutputCostUsd: cumStats.totalOutputCostUsd,
     claudeEquivalentUsd: cumStats.claudeEquivalentUsd,
     savingsVsClaudePct: cumStats.savingsVsClaudePct,
     cacheHitRatio: cumStats.cacheHitRatio,

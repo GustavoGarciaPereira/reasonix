@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Usage } from "../src/client.js";
-import { SessionStats, costUsd } from "../src/telemetry.js";
+import { SessionStats, costUsd, inputCostUsd, outputCostUsd } from "../src/telemetry.js";
 
 describe("Usage.cacheHitRatio", () => {
   it("computes hit ratio", () => {
@@ -50,5 +50,37 @@ describe("SessionStats", () => {
     expect(stats.summary().lastPromptTokens).toBe(5_000);
     stats.record(2, "deepseek-chat", new Usage(42_000, 200, 42_200, 40_000, 2_000));
     expect(stats.summary().lastPromptTokens).toBe(42_000);
+  });
+
+  it("summary splits input + output costs — the new panel breakdown", () => {
+    const stats = new SessionStats();
+    stats.record(1, "deepseek-chat", new Usage(1000, 100, 1100, 800, 200));
+    const s = stats.summary();
+    // input: (800 * 0.07 + 200 * 0.27) / 1e6 = 0.000056 + 0.000054 = 0.00011
+    // output: 100 * 1.10 / 1e6 = 0.00011
+    expect(s.totalInputCostUsd).toBeCloseTo((800 * 0.07 + 200 * 0.27) / 1_000_000, 10);
+    expect(s.totalOutputCostUsd).toBeCloseTo((100 * 1.1) / 1_000_000, 10);
+    // Sum of input+output equals total (within rounding).
+    expect(s.totalInputCostUsd + s.totalOutputCostUsd).toBeCloseTo(s.totalCostUsd, 9);
+  });
+});
+
+describe("inputCostUsd / outputCostUsd", () => {
+  it("input cost covers cache-hit + cache-miss but NOT completion", () => {
+    const u = new Usage(1000, 100, 1100, 800, 200);
+    const i = inputCostUsd("deepseek-chat", u);
+    expect(i).toBeCloseTo((800 * 0.07 + 200 * 0.27) / 1_000_000, 10);
+  });
+
+  it("output cost covers completion only", () => {
+    const u = new Usage(1000, 100, 1100, 800, 200);
+    const o = outputCostUsd("deepseek-chat", u);
+    expect(o).toBeCloseTo((100 * 1.1) / 1_000_000, 10);
+  });
+
+  it("both return 0 for an unknown model", () => {
+    const u = new Usage(1000, 100, 1100, 800, 200);
+    expect(inputCostUsd("unknown", u)).toBe(0);
+    expect(outputCostUsd("unknown", u)).toBe(0);
   });
 });
