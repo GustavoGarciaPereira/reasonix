@@ -3,6 +3,55 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.7] — 2026-04-21
+
+**Headline:** Multi-line input in the chat TUI. Paste a code block
+without it getting chopped on the first newline; compose structured
+prompts across multiple lines; still hit Enter once to send.
+
+### Added
+
+- **Multi-line prompt input** replacing the old single-line
+  `ink-text-input`. Newline-insertion paths, in order of terminal
+  reliability:
+  - `Ctrl+J` — universal (real ASCII LF), works on every terminal
+  - `Shift+Enter` — works on terminals that enable CSI-u modifier
+    reporting (iTerm2 with that setting on, WezTerm, Ghostty, etc.)
+  - `\<Enter>` — bash-style line continuation, always works as a
+    portable fallback
+  - Pasted multi-line text lands intact instead of submitting on
+    the first embedded `\r`.
+- **Visible blinking cursor** on the active line so the input box
+  looks alive even when you stop typing mid-compose.
+- **`processMultilineKey` pure reducer** in `src/cli/ui/multiline-keys.ts`.
+  Keystroke → action function that's fully unit-testable; the
+  React component is a thin wrapper. Parent-owned keys (Tab for
+  slash auto-complete, ↑/↓ for slash-nav + history, Esc for abort,
+  left/right/page arrows) are no-ops in the reducer so the buffer
+  never eats a stray control sequence when both parent and child
+  `useInput` fire on the same event.
+
+### Design notes
+
+- No mid-string insertion cursor. Edits are cursor-at-end (backspace
+  to delete, paste to insert). Matches how readline-in-raw-mode
+  feels, covers ~95% of prompt-composition cases, and skips a pile
+  of complexity (arrow-key cursor nav, selection, kill/yank) that
+  would collide with the parent's arrow-key handling for slash-nav
+  and history recall.
+- `ink-text-input` is still used by `Wizard`, `Select`, `Setup` — it
+  fits those single-line forms fine and didn't need replacing.
+
+### Tests (+18, suite 364→382)
+
+- `tests/multiline-keys.test.ts` (new) — printable input, multi-char
+  paste, Enter-submit, Shift+Enter-newline, Ctrl+J (raw LF and
+  normalized `ctrl+'j'`), bash continuation, backspace across
+  newlines, delete, tab/arrows/esc/ctrl-letter/meta all ignored,
+  empty-buffer edge cases.
+
+---
+
 ## [0.4.6] — 2026-04-21
 
 **Headline:** Slash-command UX overhaul + MCP discovery closes in
