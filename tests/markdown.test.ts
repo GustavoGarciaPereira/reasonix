@@ -1,5 +1,17 @@
-import { describe, expect, it } from "vitest";
-import { parseBlocks, stripInlineMarkup, stripMath, visibleWidth } from "../src/cli/ui/markdown.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  collectCitations,
+  isExternalUrl,
+  parseBlocks,
+  parseCitationUrl,
+  stripInlineMarkup,
+  stripMath,
+  validateCitation,
+  visibleWidth,
+} from "../src/cli/ui/markdown.js";
 
 describe("stripMath", () => {
   it("converts \\frac, \\dfrac, \\tfrac uniformly", () => {
@@ -399,5 +411,130 @@ describe("parseBlocks — fenced code blocks", () => {
     const blocks = parseBlocks("```python\nprint('hi')");
     const code = blocks.find((b) => b.kind === "code");
     expect(code && code.kind === "code" && code.text).toBe("print('hi')");
+  });
+});
+
+describe("citation links — parseCitationUrl", () => {
+  it("parses bare path", () => {
+    expect(parseCitationUrl("src/foo.ts")).toEqual({ path: "src/foo.ts" });
+  });
+
+  it("parses path:line", () => {
+    expect(parseCitationUrl("src/foo.ts:42")).toEqual({ path: "src/foo.ts", startLine: 42 });
+  });
+
+  it("parses path:start-end range", () => {
+    expect(parseCitationUrl("src/foo.ts:42-58")).toEqual({
+      path: "src/foo.ts",
+      startLine: 42,
+      endLine: 58,
+    });
+  });
+
+  it("parses GitHub-style #L42 anchor", () => {
+    expect(parseCitationUrl("src/foo.ts#L42")).toEqual({ path: "src/foo.ts", startLine: 42 });
+  });
+
+  it("parses GitHub-style #L42-L58 range", () => {
+    expect(parseCitationUrl("src/foo.ts#L42-L58")).toEqual({
+      path: "src/foo.ts",
+      startLine: 42,
+      endLine: 58,
+    });
+  });
+
+  it("returns null on empty input", () => {
+    expect(parseCitationUrl("")).toBeNull();
+    expect(parseCitationUrl("   ")).toBeNull();
+  });
+});
+
+describe("citation links — isExternalUrl", () => {
+  it("recognizes http/https/ftp", () => {
+    expect(isExternalUrl("https://example.com")).toBe(true);
+    expect(isExternalUrl("http://example.com")).toBe(true);
+    expect(isExternalUrl("ftp://example.com")).toBe(true);
+  });
+
+  it("recognizes mailto and protocol-relative", () => {
+    expect(isExternalUrl("mailto:a@b.c")).toBe(true);
+    expect(isExternalUrl("//cdn.example.com/x")).toBe(true);
+  });
+
+  it("rejects local paths and bare names", () => {
+    expect(isExternalUrl("src/foo.ts")).toBe(false);
+    expect(isExternalUrl("src/foo.ts:42")).toBe(false);
+    expect(isExternalUrl("README.md")).toBe(false);
+    expect(isExternalUrl("./foo")).toBe(false);
+  });
+});
+
+describe("citation links — validateCitation + collectCitations", () => {
+  let tmp: string;
+  beforeAll(() => {
+    tmp = mkdtempSync(join(tmpdir(), "reasonix-citation-"));
+    writeFileSync(join(tmp, "real.ts"), "line1\nline2\nline3\nline4\nline5\n");
+  });
+  afterAll(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("file exists, no line → ok", () => {
+    expect(validateCitation("real.ts", tmp)).toEqual({ ok: true });
+  });
+
+  it("file exists, line in range → ok", () => {
+    expect(validateCitation("real.ts:3", tmp)).toEqual({ ok: true });
+  });
+
+  it("file exists, line out of range → broken with reason", () => {
+    const result = validateCitation("real.ts:99", tmp);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("99");
+  });
+
+  it("range end out of file → broken", () => {
+    const result = validateCitation("real.ts:1-99", tmp);
+    expect(result.ok).toBe(false);
+  });
+
+  it("missing file → broken with 'file not found'", () => {
+    const result = validateCitation("ghost.ts:1", tmp);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("file not found");
+  });
+
+  it("collectCitations validates every unique citation, skips externals", () => {
+    const text = [
+      "See [foo](real.ts:2) for details.",
+      "Compare with [bar](https://example.com).",
+      "Bogus claim [baz](ghost.ts:1).",
+      "Another [foo again](real.ts:2).",
+    ].join("\n");
+    const map = collectCitations(text, tmp);
+    expect(map.size).toBe(2);
+    expect(map.get("real.ts:2")).toEqual({ ok: true });
+    expect(map.get("ghost.ts:1")?.ok).toBe(false);
+    expect(map.has("https://example.com")).toBe(false);
+  });
+});
+
+describe("citation links — parseBlocks regression", () => {
+  it("plain markdown link inside paragraph still parses as paragraph", () => {
+    const blocks = parseBlocks("See [the docs](src/foo.ts:42) for context.");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.kind).toBe("paragraph");
+    if (blocks[0]?.kind === "paragraph") {
+      expect(blocks[0].text).toContain("[the docs](src/foo.ts:42)");
+    }
+  });
+
+  it("stripInlineMarkup extracts link text only", () => {
+    expect(stripInlineMarkup("see [foo](path.ts:10) here")).toBe("see foo here");
+  });
+
+  it("visibleWidth ignores link URL", () => {
+    // "see " + "foo" + " here" = 12 visible chars
+    expect(visibleWidth("see [foo](path.ts:10) here")).toBe(12);
   });
 });

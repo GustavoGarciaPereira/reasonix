@@ -24,7 +24,13 @@ export interface DisplayEvent {
   toolCallBuild?: { name: string; chars: number };
 }
 
-export const EventRow = React.memo(function EventRow({ event }: { event: DisplayEvent }) {
+export const EventRow = React.memo(function EventRow({
+  event,
+  projectRoot,
+}: {
+  event: DisplayEvent;
+  projectRoot?: string;
+}) {
   if (event.role === "user") {
     return (
       <Box>
@@ -49,7 +55,11 @@ export const EventRow = React.memo(function EventRow({ event }: { event: Display
         {!isPlanStateEmpty(event.planState) ? (
           <PlanStateBlock planState={event.planState!} />
         ) : null}
-        {event.text ? <Markdown text={event.text} /> : <Text dimColor>(no content)</Text>}
+        {event.text ? (
+          <Markdown text={event.text} projectRoot={projectRoot} />
+        ) : (
+          <Text dimColor>(no content)</Text>
+        )}
         {event.stats ? <StatsLine stats={event.stats} /> : null}
         {event.repair ? <Text color="magenta">{event.repair}</Text> : null}
       </Box>

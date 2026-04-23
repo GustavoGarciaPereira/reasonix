@@ -14,6 +14,8 @@
  * show the expression verbatim; terminals don't do math fonts anyway.
  */
 
+import { readFileSync, statSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { Box, Text } from "ink";
 import React from "react";
 
@@ -145,8 +147,104 @@ export function stripMath(s: string): string {
 }
 
 /**
+ * Citation links: `[text](url)` where url either points outside the repo
+ * (rendered as a plain external link) or resolves to a file/line in the
+ * project (rendered as a validated citation — broken citations turn
+ * red so the user can spot model hallucinations at a glance). The point
+ * is: the model is encouraged to ground every codebase claim in a
+ * link, and Reasonix surfaces broken links instead of silently letting
+ * fabrications past.
+ */
+export type CitationStatus = { ok: true } | { ok: false; reason: string };
+export type CitationMap = Map<string, CitationStatus>;
+
+interface CitationParts {
+  path: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+export function isExternalUrl(url: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(url) || url.startsWith("mailto:") || url.startsWith("//");
+}
+
+export function parseCitationUrl(url: string): CitationParts | null {
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  // GitHub-style anchor: foo.ts#L42 or foo.ts#L42-L58
+  let m = trimmed.match(/^(.+?)#L(\d+)(?:-L?(\d+))?$/);
+  if (m) {
+    return {
+      path: m[1] ?? "",
+      startLine: Number(m[2]),
+      endLine: m[3] ? Number(m[3]) : undefined,
+    };
+  }
+  // Colon-style: foo.ts:42 or foo.ts:42-58
+  m = trimmed.match(/^(.+?):(\d+)(?:-(\d+))?$/);
+  if (m) {
+    return {
+      path: m[1] ?? "",
+      startLine: Number(m[2]),
+      endLine: m[3] ? Number(m[3]) : undefined,
+    };
+  }
+  return { path: trimmed };
+}
+
+export function validateCitation(url: string, projectRoot: string): CitationStatus {
+  const parts = parseCitationUrl(url);
+  if (!parts || !parts.path) return { ok: false, reason: "empty path" };
+  const fullPath = isAbsolute(parts.path) ? parts.path : join(projectRoot, parts.path);
+  let stat: ReturnType<typeof statSync>;
+  try {
+    stat = statSync(fullPath);
+  } catch {
+    return { ok: false, reason: "file not found" };
+  }
+  if (!stat.isFile()) return { ok: false, reason: "not a file" };
+  if (parts.startLine === undefined) return { ok: true };
+  let lineCount: number;
+  try {
+    lineCount = readFileSync(fullPath, "utf8").split("\n").length;
+  } catch {
+    return { ok: false, reason: "unreadable" };
+  }
+  if (parts.startLine < 1 || parts.startLine > lineCount) {
+    return { ok: false, reason: `line ${parts.startLine} > ${lineCount}` };
+  }
+  if (parts.endLine !== undefined) {
+    if (parts.endLine < parts.startLine || parts.endLine > lineCount) {
+      return { ok: false, reason: `range end ${parts.endLine} invalid` };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * Pre-scan rendered text for every `[text](url)` link, validate the
+ * citation-shaped ones, and cache the result. Done once per Markdown
+ * mount so InlineMd doesn't re-stat the filesystem on every keystroke
+ * during streaming. External links short-circuit (no fs work).
+ */
+export function collectCitations(text: string, projectRoot: string): CitationMap {
+  const map: CitationMap = new Map();
+  const re = /\[([^\]\n]+)\]\(([^)\n]+)\)/g;
+  for (const m of text.matchAll(re)) {
+    const url = m[2] ?? "";
+    if (!url || isExternalUrl(url)) continue;
+    if (map.has(url)) continue;
+    map.set(url, validateCitation(url, projectRoot));
+  }
+  return map;
+}
+
+/**
  * Split a single line into styled segments for bold / italic / inline
- * code.
+ * code / links.
+ *
+ * Link group is FIRST so `[text](url)` with markup-looking URL chars
+ * doesn't get partially eaten by the bold/code branches.
  *
  * Triple-backtick (```…```) runs are matched BEFORE the single-backtick
  * case so a one-line code span like `​``bash echo hi``​` is captured
@@ -158,9 +256,17 @@ export function stripMath(s: string): string {
  * `parseBlocks`.
  */
 const INLINE_RE =
-  /(\*\*([^*\n]+?)\*\*|```([^\n]+?)```|`([^`\n]+?)`|(?<![*\w])\*([^*\n]+?)\*(?!\w))/g;
+  /(\[([^\]\n]+)\]\(([^)\n]+)\)|\*\*([^*\n]+?)\*\*|```([^\n]+?)```|`([^`\n]+?)`|(?<![*\w])\*([^*\n]+?)\*(?!\w))/g;
 
-function InlineMd({ text, padTo }: { text: string; padTo?: number }) {
+function InlineMd({
+  text,
+  padTo,
+  citations,
+}: {
+  text: string;
+  padTo?: number;
+  citations?: CitationMap;
+}) {
   const parts: React.ReactNode[] = [];
   let last = 0;
   let idx = 0;
@@ -170,35 +276,61 @@ function InlineMd({ text, padTo }: { text: string; padTo?: number }) {
       parts.push(<Text key={`t${idx++}`}>{text.slice(last, start)}</Text>);
     }
     // Groups, in the order they appear in INLINE_RE:
-    //   m[2] = bold content (inside ** **)
-    //   m[3] = triple-backtick content (strip leading lang tag)
-    //   m[4] = single-backtick inline code
-    //   m[5] = italic content (inside * *)
-    if (m[2] !== undefined) {
+    //   m[2] = link text          m[3] = link url
+    //   m[4] = bold content (inside ** **)
+    //   m[5] = triple-backtick content (strip leading lang tag)
+    //   m[6] = single-backtick inline code
+    //   m[7] = italic content (inside * *)
+    if (m[2] !== undefined && m[3] !== undefined) {
+      const linkText = m[2];
+      const url = m[3];
+      if (isExternalUrl(url)) {
+        parts.push(
+          <Text key={`l${idx++}`} color="blue" underline>
+            {linkText}
+          </Text>,
+        );
+      } else {
+        const status = citations?.get(url);
+        if (status && !status.ok) {
+          parts.push(
+            <Text key={`l${idx++}`} color="red" strikethrough>
+              {`${linkText} ❌`}
+            </Text>,
+          );
+        } else {
+          parts.push(
+            <Text key={`l${idx++}`} color="cyan" underline>
+              {linkText}
+            </Text>,
+          );
+        }
+      }
+    } else if (m[4] !== undefined) {
       parts.push(
         <Text key={`b${idx++}`} bold>
-          {m[2]}
+          {m[4]}
         </Text>,
       );
-    } else if (m[3] !== undefined) {
+    } else if (m[5] !== undefined) {
       // One-line fenced span: ```bash echo hi``` → drop the "bash "
       // language tag so the user doesn't see it rendered in code color.
-      const stripped = m[3].replace(/^(\w+)\s+/, "");
+      const stripped = m[5].replace(/^(\w+)\s+/, "");
       parts.push(
         <Text key={`c${idx++}`} color="yellow">
           {stripped}
         </Text>,
       );
-    } else if (m[4] !== undefined) {
+    } else if (m[6] !== undefined) {
       parts.push(
         <Text key={`c${idx++}`} color="yellow">
-          {m[4]}
+          {m[6]}
         </Text>,
       );
-    } else if (m[5] !== undefined) {
+    } else if (m[7] !== undefined) {
       parts.push(
         <Text key={`i${idx++}`} italic>
-          {m[5]}
+          {m[7]}
         </Text>,
       );
     }
@@ -228,6 +360,7 @@ function InlineMd({ text, padTo }: { text: string; padTo?: number }) {
  */
 export function stripInlineMarkup(s: string): string {
   return s
+    .replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, "$1")
     .replace(/\*\*([^*\n]+?)\*\*/g, "$1")
     .replace(/```([^\n]+?)```/g, (_m, c: string) => c.replace(/^(\w+)\s+/, ""))
     .replace(/`([^`\n]+?)`/g, "$1")
@@ -557,23 +690,23 @@ export function parseBlocks(raw: string): Block[] {
   return out;
 }
 
-function BlockView({ block }: { block: Block }) {
+function BlockView({ block, citations }: { block: Block; citations?: CitationMap }) {
   switch (block.kind) {
     case "heading":
       return (
         <Text bold color="cyan">
-          <InlineMd text={block.text} />
+          <InlineMd text={block.text} citations={citations} />
         </Text>
       );
     case "paragraph":
-      return <InlineMd text={block.text} />;
+      return <InlineMd text={block.text} citations={citations} />;
     case "bullet":
       return (
         <Box flexDirection="column">
           {block.items.map((item, i) => (
             <Box key={`${i}-${item.slice(0, 24)}`}>
               <Text color="cyan">{block.ordered ? ` ${block.start + i}. ` : "  • "}</Text>
-              <InlineMd text={item} />
+              <InlineMd text={item} citations={citations} />
             </Box>
           ))}
         </Box>
@@ -587,7 +720,7 @@ function BlockView({ block }: { block: Block }) {
     case "edit-block":
       return <EditBlockRow block={block} />;
     case "table":
-      return <TableBlockRow block={block} />;
+      return <TableBlockRow block={block} citations={citations} />;
     case "hr":
       return <Text dimColor>{"────────────────────────"}</Text>;
   }
@@ -614,7 +747,7 @@ function splitTableRow(line: string): string[] {
  * doesn't wreck the layout. Header row is bold + cyan; body rows use
  * the default text color. Separator is a dim row of dashes.
  */
-function TableBlockRow({ block }: { block: TableBlock }) {
+function TableBlockRow({ block, citations }: { block: TableBlock; citations?: CitationMap }) {
   const colCount = Math.max(block.header.length, ...block.rows.map((r) => r.length));
   const widths: number[] = [];
   for (let c = 0; c < colCount; c++) {
@@ -634,7 +767,7 @@ function TableBlockRow({ block }: { block: TableBlock }) {
         {block.header.map((cell, ci) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: table columns never reorder — derived from a static header array
           <Text key={`h-${ci}`} bold color="cyan">
-            <InlineMd text={cell} padTo={widths[ci] ?? 3} />
+            <InlineMd text={cell} padTo={widths[ci] ?? 3} citations={citations} />
             {ci < colCount - 1 ? " │ " : ""}
           </Text>
         ))}
@@ -646,7 +779,7 @@ function TableBlockRow({ block }: { block: TableBlock }) {
           {Array.from({ length: colCount }).map((_, ci) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: same — column axis is fixed by the table shape
             <Text key={`c-${ri}-${ci}`}>
-              <InlineMd text={row[ci] ?? ""} padTo={widths[ci] ?? 3} />
+              <InlineMd text={row[ci] ?? ""} padTo={widths[ci] ?? 3} citations={citations} />
               {ci < colCount - 1 ? " │ " : ""}
             </Text>
           ))}
@@ -734,13 +867,43 @@ function EditBlockRow({ block }: { block: EditBlockView }) {
   );
 }
 
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text, projectRoot }: { text: string; projectRoot?: string }) {
   const cleaned = stripMath(text);
+  const root = projectRoot ?? process.cwd();
+  const citations = React.useMemo(() => collectCitations(cleaned, root), [cleaned, root]);
   const blocks = React.useMemo(() => parseBlocks(cleaned), [cleaned]);
+  // Collect broken citations into an ordered list so the user sees
+  // exactly which paths/lines failed and why. A bare count ("⚠ 1
+  // broken citation") tells the user something's wrong but leaves them
+  // to scan the wall of text for the red strikethrough — listing each
+  // one with its reason makes the failure actionable: the user can
+  // immediately push back on the specific claim, or decide it doesn't
+  // matter and move on.
+  const broken: Array<{ url: string; reason: string }> = [];
+  for (const [url, status] of citations) {
+    if (!status.ok) broken.push({ url, reason: status.reason });
+  }
   return (
     <Box flexDirection="column" gap={1}>
       {blocks.map((b, i) => (
-        <BlockView key={`${i}-${b.kind}`} block={b} />
+        <BlockView key={`${i}-${b.kind}`} block={b} citations={citations} />
+      ))}
+      {broken.length > 0 ? <BrokenCitationsBlock items={broken} /> : null}
+    </Box>
+  );
+}
+
+function BrokenCitationsBlock({ items }: { items: Array<{ url: string; reason: string }> }) {
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor="red" paddingX={1}>
+      <Text color="red" bold>
+        {`⚠ ${items.length} broken citation${items.length > 1 ? "s" : ""} — the model referenced paths or lines that don't exist`}
+      </Text>
+      {items.map((b, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: list is derived from a Map iteration order, stable per render
+        <Text key={`bc-${i}`} color="red">
+          {`  ❌ ${b.url} → ${b.reason}`}
+        </Text>
       ))}
     </Box>
   );

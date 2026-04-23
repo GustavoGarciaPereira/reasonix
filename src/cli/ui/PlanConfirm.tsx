@@ -33,11 +33,12 @@ export interface PlanConfirmProps {
    * transcript via the tool result).
    */
   maxRenderedChars?: number;
+  projectRoot?: string;
 }
 
 const DEFAULT_MAX_RENDERED = 2400;
 
-export function PlanConfirm({ plan, onChoose, maxRenderedChars }: PlanConfirmProps) {
+export function PlanConfirm({ plan, onChoose, maxRenderedChars, projectRoot }: PlanConfirmProps) {
   const cap = maxRenderedChars ?? DEFAULT_MAX_RENDERED;
   const tooLong = plan.length > cap;
   const visible = tooLong
@@ -58,7 +59,7 @@ export function PlanConfirm({ plan, onChoose, maxRenderedChars }: PlanConfirmPro
         </Text>
       </Box>
       <Box marginTop={1} flexDirection="column">
-        <Markdown text={visible} />
+        <Markdown text={visible} projectRoot={projectRoot} />
       </Box>
       {hasOpenQuestions ? (
         <Box marginTop={1}>

@@ -1274,7 +1274,9 @@ export function App({
           balance={balance}
           updateAvailable={updateAvailable}
         />
-        <Static items={historical}>{(item) => <EventRow key={item.id} event={item} />}</Static>
+        <Static items={historical}>
+          {(item) => <EventRow key={item.id} event={item} projectRoot={hookCwd} />}
+        </Static>
         {/*
           Live rows are hidden while the ShellConfirm modal is up — the
           model's concurrent "please confirm" stream is noise the user
@@ -1284,7 +1286,7 @@ export function App({
         */}
         {!PLAIN_UI && !pendingShell && !pendingPlan && !stagedInput && streaming ? (
           <Box marginY={1}>
-            <EventRow event={streaming} />
+            <EventRow event={streaming} projectRoot={hookCwd} />
           </Box>
         ) : null}
         {!PLAIN_UI && !pendingShell && !pendingPlan && !stagedInput && ongoingTool ? (
@@ -1326,7 +1328,7 @@ export function App({
             onCancel={handleStagedInputCancel}
           />
         ) : pendingPlan ? (
-          <PlanConfirm plan={pendingPlan} onChoose={handlePlanConfirm} />
+          <PlanConfirm plan={pendingPlan} onChoose={handlePlanConfirm} projectRoot={hookCwd} />
         ) : pendingShell ? (
           <ShellConfirm
             command={pendingShell}
