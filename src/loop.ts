@@ -6,6 +6,13 @@ import {
   runBranches,
 } from "./consistency.js";
 import { type HarvestOptions, type TypedPlanState, emptyPlanState, harvest } from "./harvest.js";
+import {
+  type HookOutcome,
+  type HookPayload,
+  type ResolvedHook,
+  formatHookOutcomeMessage,
+  runHooks,
+} from "./hooks.js";
 import { DEFAULT_MAX_RESULT_CHARS, truncateForModel } from "./mcp/registry.js";
 import { AppendOnlyLog, type ImmutablePrefix, VolatileScratch } from "./memory.js";
 import { type RepairReport, ToolCallRepair } from "./repair/index.js";
@@ -127,6 +134,21 @@ export interface CacheFirstLoopOptions {
    * `~/.reasonix/sessions/<name>.jsonl` so the next run can resume.
    */
   session?: string;
+  /**
+   * Resolved hook list — loaded from `<project>/.reasonix/settings.json`
+   * + `~/.reasonix/settings.json` by the CLI before constructing the loop.
+   * The loop dispatches `PreToolUse` and `PostToolUse` events itself; the
+   * CLI handles `UserPromptSubmit` and `Stop` since they live at the App
+   * boundary. Empty / unset → no hooks fire (the runtime cost of an empty
+   * filter is one ms). See `src/hooks.ts` for the full contract.
+   */
+  hooks?: ResolvedHook[];
+  /**
+   * `cwd` reported to hooks via the stdin payload. Defaults to `process.cwd()`.
+   * `reasonix code` overrides this to the sandbox root so a hook that does
+   * `cd $REASONIX_CWD` lands in the project, not in the user's shell home.
+   */
+  hookCwd?: string;
 }
 
 /**
@@ -165,6 +187,15 @@ export class CacheFirstLoop {
   branchOptions: BranchOptions;
   sessionName: string | null;
 
+  /**
+   * Hook list, mutable so `/hooks reload` can swap it without
+   * reconstructing the loop. Default empty — the filter cost on a
+   * tool call is one array length check.
+   */
+  hooks: ResolvedHook[];
+  /** `cwd` reported to hook stdin. Resolved once at construction. */
+  readonly hookCwd: string;
+
   /** Number of messages that were pre-loaded from the session file. */
   readonly resumedMessageCount: number;
 
@@ -194,6 +225,8 @@ export class CacheFirstLoop {
     // the decision, keep the iter cap as a last-resort backstop for
     // the case where something spins without growing the prompt.
     this.maxToolIters = opts.maxToolIters ?? 64;
+    this.hooks = opts.hooks ?? [];
+    this.hookCwd = opts.hookCwd ?? process.cwd();
 
     // Resolve branch config first (since it forces harvest on).
     if (typeof opts.branch === "number") {
@@ -846,7 +879,52 @@ export class CacheFirstLoop {
           toolName: name,
           toolArgs: args,
         };
-        const result = await this.tools.dispatch(name, args, { signal });
+
+        // PreToolUse hooks. A `block` decision (exit 2) skips dispatch
+        // and surfaces the hook's stderr as the tool result so the model
+        // sees a structured refusal instead of a silent omission. Non-
+        // block non-zero outcomes are warnings: the loop continues, the
+        // UI gets a yellow row.
+        const parsedArgs = safeParseToolArgs(args);
+        const preReport = await runHooks({
+          hooks: this.hooks,
+          payload: {
+            event: "PreToolUse",
+            cwd: this.hookCwd,
+            toolName: name,
+            toolArgs: parsedArgs,
+          },
+        });
+        for (const w of hookWarnings(preReport.outcomes, this._turn)) yield w;
+
+        let result: string;
+        if (preReport.blocked) {
+          const blocking = preReport.outcomes[preReport.outcomes.length - 1];
+          const reason = (
+            blocking?.stderr ||
+            blocking?.stdout ||
+            "blocked by PreToolUse hook"
+          ).trim();
+          result = `[hook block] ${blocking?.hook.command ?? "<unknown>"}\n${reason}`;
+        } else {
+          result = await this.tools.dispatch(name, args, { signal });
+
+          // PostToolUse hooks — block is meaningless after the fact, so
+          // every non-pass outcome is a warning. Hooks here are the
+          // natural place for "after every edit, run the formatter."
+          const postReport = await runHooks({
+            hooks: this.hooks,
+            payload: {
+              event: "PostToolUse",
+              cwd: this.hookCwd,
+              toolName: name,
+              toolArgs: parsedArgs,
+              toolResult: result,
+            },
+          });
+          for (const w of hookWarnings(postReport.outcomes, this._turn)) yield w;
+        }
+
         this.appendAndPersist({
           role: "tool",
           tool_call_id: call.id ?? "",
@@ -970,6 +1048,28 @@ export function stripHallucinatedToolMarkup(s: string): string {
   // different line (seen when R1 truncates mid-call).
   out = out.replace(/<｜DSML｜[\s\S]*$/g, "");
   return out.trim();
+}
+
+/**
+ * Try to JSON-decode the model's tool-call arguments so PreToolUse /
+ * PostToolUse hooks get a structured object instead of a string.
+ * Falls back to the raw string when the model emits malformed JSON
+ * (the loop's own dispatch already tolerates that — keep parity).
+ */
+function safeParseToolArgs(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/** Format non-pass hook outcomes as `LoopEvent`s of role `warning`. */
+function* hookWarnings(outcomes: HookOutcome[], turn: number): Generator<LoopEvent> {
+  for (const o of outcomes) {
+    if (o.decision === "pass") continue;
+    yield { turn, role: "warning", content: formatHookOutcomeMessage(o) };
+  }
 }
 
 function reasonPrefixFor(reason: "budget" | "aborted" | "context-guard", iterCap: number): string {

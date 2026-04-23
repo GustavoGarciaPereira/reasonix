@@ -253,3 +253,31 @@ export {
   isNpxInstall,
 } from "./version.js";
 export type { GetLatestVersionOptions } from "./version.js";
+
+export {
+  HOOK_EVENTS,
+  HOOK_SETTINGS_DIRNAME,
+  HOOK_SETTINGS_FILENAME,
+  decideOutcome,
+  formatHookOutcomeMessage,
+  globalSettingsPath,
+  loadHooks,
+  matchesTool,
+  projectSettingsPath,
+  runHooks,
+} from "./hooks.js";
+export type {
+  HookConfig,
+  HookEvent,
+  HookOutcome,
+  HookPayload,
+  HookReport,
+  HookScope,
+  HookSettings,
+  HookSpawner,
+  HookSpawnInput,
+  HookSpawnResult,
+  LoadHookSettingsOptions,
+  ResolvedHook,
+  RunHooksOptions,
+} from "./hooks.js";

@@ -481,7 +481,7 @@ describe("handleSlash", () => {
   });
 
   it("suggestSlashCommands filters by prefix", () => {
-    expect(suggestSlashCommands("h").map((s) => s.cmd)).toEqual(["help", "harvest"]);
+    expect(suggestSlashCommands("h").map((s) => s.cmd)).toEqual(["help", "harvest", "hooks"]);
     // Case-insensitive.
     expect(suggestSlashCommands("HE").map((s) => s.cmd)).toEqual(["help"]);
     // Empty prefix returns everything (non-contextual).

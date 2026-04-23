@@ -271,6 +271,51 @@ prose, so skills authored for other tools usually port over unchanged
 (Reasonix's tool names differ — `filesystem` / `shell` / `web` — but
 the model reads the instructions and picks our equivalents).
 
+### Hooks — automate around tool calls and turns
+
+Drop a `settings.json` under `.reasonix/` (project or `~/`) and
+Reasonix will fire shell commands at four well-known points in
+the loop: before a tool runs, after a tool returns, before your
+prompt reaches the model, and after the turn ends.
+
+```json
+// <project>/.reasonix/settings.json   ← committable
+// ~/.reasonix/settings.json           ← per-user
+{
+  "hooks": {
+    "PreToolUse":       [{ "match": "edit_file|write_file", "command": "bun scripts/guard.ts" }],
+    "PostToolUse":      [{ "match": "edit_file", "command": "biome format --write" }],
+    "UserPromptSubmit": [{ "command": "echo $(date +%s) >> ~/.reasonix/prompts.log" }],
+    "Stop":             [{ "command": "bun test --run", "timeout": 60000 }]
+  }
+}
+```
+
+Each hook is a shell command. Reasonix invokes it with stdin = a
+JSON envelope describing the event:
+
+```json
+{ "event": "PreToolUse", "cwd": "/path/to/project",
+  "toolName": "edit_file", "toolArgs": { "path": "src/x.ts", "..." } }
+```
+
+Exit code drives the decision:
+
+- **0** — pass; loop continues normally
+- **2** — block (only on `PreToolUse` / `UserPromptSubmit`); the
+  hook's stderr becomes the synthetic tool result the model sees,
+  or the prompt is dropped entirely
+- **anything else** — warn; loop continues, stderr renders as a
+  yellow row inline
+
+`match` is anchored regex on the tool name; `*` or omitted matches
+every tool. Project hooks fire before global hooks. Default
+timeouts: 5s for blocking events, 30s for logging events; per-hook
+`timeout` overrides.
+
+**Slash**: `/hooks` (list active hooks) · `/hooks reload` (re-read
+`settings.json` from disk without losing your session).
+
 ---
 
 ## `reasonix` — also works as general chat

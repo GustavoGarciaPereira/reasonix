@@ -3,6 +3,91 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.23] — 2026-04-22
+
+**Headline:** Hooks — user-defined automation that fires at four
+well-known points in the loop. Same two-scope layout (project +
+global) as memory and skills.
+
+A hook is a shell command. Reasonix invokes it with stdin = a JSON
+envelope describing the event. The exit code drives the decision:
+`0` = pass, `2` = block (only on `PreToolUse` / `UserPromptSubmit`),
+anything else = warn (rendered inline as a yellow row, the loop
+keeps going). Block on a tool event swaps the dispatch for a
+synthetic tool result carrying the hook's stderr — the model sees
+a structured refusal instead of a silent omission, and can
+reason about what to do next.
+
+Settings file:
+
+```json
+// <project>/.reasonix/settings.json   ← committable
+// ~/.reasonix/settings.json           ← per-user
+{
+  "hooks": {
+    "PreToolUse":       [{ "match": "edit_file|write_file", "command": "bun scripts/guard.ts" }],
+    "PostToolUse":      [{ "match": "edit_file", "command": "biome format --write" }],
+    "UserPromptSubmit": [{ "command": "echo $(date +%s) >> ~/.reasonix/prompts.log" }],
+    "Stop":             [{ "command": "bun test --run", "timeout": 60000 }]
+  }
+}
+```
+
+Project hooks fire before global hooks. `match` is anchored regex
+on the tool name (`*` or omitted = match every tool); ignored for
+prompt / Stop events. Per-hook `timeout` overrides the defaults
+(5s for blocking events, 30s for logging events). The CLI loads
+both files at App mount; `/hooks` lists what's active and
+`/hooks reload` re-reads disk without tearing down the running
+loop (so the append-only log is preserved).
+
+Deliberate non-goals for v1: workflow DSL, conditional chaining,
+hook templates. Hooks are shell commands — the user already has
+a programming language, we don't need to invent one.
+
+### Added
+
+- **`src/hooks.ts`** — `loadHooks` (project + global merge),
+  `runHooks` (event filter + stdin JSON + spawn dispatch),
+  `decideOutcome` (pure exit-code → decision matrix), `matchesTool`
+  (anchored-regex name filter), `formatHookOutcomeMessage` (single
+  source of truth for the warning row text). Spawner is injectable
+  for tests; default uses `shell: true` so `&&`, pipes, env
+  expansion all behave the way they do in the user's terminal.
+- **`CacheFirstLoopOptions.hooks` + `hookCwd`**. Loop dispatches
+  `PreToolUse` (around line 866 in `src/loop.ts`) and `PostToolUse`
+  (immediately after dispatch). `loop.hooks` is mutable so
+  `/hooks reload` can swap the list without rebuilding the loop.
+- **App-level `UserPromptSubmit` + `Stop`**. `App.tsx` calls
+  `runHooks` before pushing the user message (block = drop the
+  prompt) and after `loop.step` resolves (warnings only, since the
+  turn already ended).
+- **`/hooks` slash command**. `list` (default) groups loaded hooks
+  by event with scope tags; `reload` re-reads settings.json from
+  disk via the App-provided `reloadHooks` callback.
+
+### Tests (+32, suite 672 → 704)
+
+- `tests/hooks.test.ts` — `loadHooks` (empty / project+global / array
+  order / ignore malformed entries / tolerate malformed JSON / no
+  project root → global only / path helpers), `matchesTool` (`*` /
+  anchored regex / substring rejected / malformed regex falls back
+  to no-match / non-tool events ignore match), `decideOutcome`
+  (exit 0 / exit 2 / non-zero / timeout / spawn error per event),
+  `runHooks` (filters by event+match before running, stops at first
+  block, doesn't stop on warn, stdin envelope shape, cwd routing,
+  default timeouts, per-hook timeout override), `formatHookOutcomeMessage`
+  (pass → empty / non-pass includes scope+command+detail / 60-char
+  truncation).
+- `tests/loop-hooks.test.ts` — `CacheFirstLoop` accepts a hook list,
+  default empty, `loop.hooks` is mutable, `hookCwd` defaults to
+  `process.cwd()` and honors override, no-tool turn doesn't fire
+  PreToolUse hooks.
+- `tests/slash.test.ts` — updated `suggestSlashCommands("h")` to
+  include the new `hooks` command.
+
+---
+
 ## [0.4.22] — 2026-04-22
 
 **Headline:** Version display in the TUI header + `reasonix update`

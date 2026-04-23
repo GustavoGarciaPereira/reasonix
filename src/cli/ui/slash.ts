@@ -1,4 +1,11 @@
 import { spawnSync } from "node:child_process";
+import {
+  HOOK_EVENTS,
+  type HookEvent,
+  type ResolvedHook,
+  globalSettingsPath,
+  projectSettingsPath,
+} from "../../hooks.js";
 import type { CacheFirstLoop } from "../../loop.js";
 import type { InspectionReport } from "../../mcp/inspect.js";
 import { PROJECT_MEMORY_FILE, memoryEnabled, readProjectMemory } from "../../project-memory.js";
@@ -110,6 +117,13 @@ export interface SlashContext {
    * pending plan.
    */
   clearPendingPlan?: () => void;
+  /**
+   * Re-load `~/.reasonix/settings.json` + `<project>/.reasonix/settings.json`
+   * and update both the App's hook state and the loop's mutable hook
+   * list. Returns the new hook count so the slash can echo a sane
+   * confirmation. Absent → `/hooks reload` replies "not available".
+   */
+  reloadHooks?: () => number;
 }
 
 export interface McpServerSummary {
@@ -163,6 +177,11 @@ export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
     cmd: "skill",
     argsHint: "[list|show <name>|<name> [args]]",
     summary: "list / run user skills (<project>/.reasonix/skills + ~/.reasonix/skills)",
+  },
+  {
+    cmd: "hooks",
+    argsHint: "[reload]",
+    summary: "list active hooks (settings.json under .reasonix/) · reload re-reads from disk",
   },
   { cmd: "think", summary: "dump the last turn's full R1 reasoning (reasoner only)" },
   { cmd: "retry", summary: "truncate & resend your last message (fresh sample)" },
@@ -367,6 +386,11 @@ export function handleSlash(
     case "skill":
     case "skills": {
       return handleSkillSlash(args, ctx);
+    }
+
+    case "hook":
+    case "hooks": {
+      return handleHooksSlash(args, loop, ctx);
     }
 
     case "think":
@@ -657,6 +681,63 @@ export function handleSlash(
  * (set by `reasonix code`). In plain chat mode the store reads the
  * global scope only, matching how user-memory behaves.
  */
+function handleHooksSlash(args: string[], loop: CacheFirstLoop, ctx: SlashContext): SlashResult {
+  const sub = (args[0] ?? "").toLowerCase();
+
+  if (sub === "reload") {
+    if (!ctx.reloadHooks) {
+      return {
+        info: "/hooks reload is not available in this context (no reload callback wired).",
+      };
+    }
+    const count = ctx.reloadHooks();
+    return { info: `▸ reloaded hooks · ${count} active` };
+  }
+
+  if (sub !== "" && sub !== "list" && sub !== "ls") {
+    return {
+      info: "usage: /hooks            list active hooks\n       /hooks reload     re-read settings.json files",
+    };
+  }
+
+  const hooks = loop.hooks;
+  const projPath = ctx.codeRoot ? projectSettingsPath(ctx.codeRoot) : undefined;
+  const globPath = globalSettingsPath();
+  if (hooks.length === 0) {
+    const lines = [
+      "no hooks configured.",
+      "",
+      "drop a settings.json with a `hooks` key into either of:",
+      ctx.codeRoot
+        ? `  · ${projPath} (project)`
+        : "  · <project>/.reasonix/settings.json (project)",
+      `  · ${globPath} (global)`,
+      "",
+      "events: PreToolUse, PostToolUse, UserPromptSubmit, Stop",
+      "exit 0 = pass · exit 2 = block (Pre*) · other = warn",
+    ];
+    return { info: lines.join("\n") };
+  }
+
+  const grouped = new Map<HookEvent, ResolvedHook[]>();
+  for (const event of HOOK_EVENTS) grouped.set(event, []);
+  for (const h of hooks) grouped.get(h.event)?.push(h);
+
+  const lines: string[] = [`▸ ${hooks.length} hook(s) loaded`];
+  for (const event of HOOK_EVENTS) {
+    const list = grouped.get(event) ?? [];
+    if (list.length === 0) continue;
+    lines.push("", `${event}:`);
+    for (const h of list) {
+      const match = h.match && h.match !== "*" ? ` match=${h.match}` : "";
+      const desc = h.description ? `  — ${h.description}` : "";
+      lines.push(`  [${h.scope}]${match} ${h.command}${desc}`);
+    }
+  }
+  lines.push("", `sources: project=${projPath ?? "(none — chat mode)"} · global=${globPath}`);
+  return { info: lines.join("\n") };
+}
+
 function handleSkillSlash(args: string[], ctx: SlashContext): SlashResult {
   const store = new SkillStore({ projectRoot: ctx.codeRoot });
   const sub = (args[0] ?? "").toLowerCase();

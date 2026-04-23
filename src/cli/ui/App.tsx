@@ -11,6 +11,7 @@ import {
   snapshotBeforeEdits,
 } from "../../code/edit-blocks.js";
 import { addProjectShellAllowed } from "../../config.js";
+import { type ResolvedHook, formatHookOutcomeMessage, loadHooks, runHooks } from "../../hooks.js";
 import { CacheFirstLoop, DeepSeekClient, ImmutablePrefix } from "../../index.js";
 import type { LoopEvent } from "../../loop.js";
 import type { SessionSummary } from "../../telemetry.js";
@@ -142,6 +143,17 @@ export function App({
   // install is already current (or offline); rendered only when
   // there's something newer to nudge the user toward.
   const [updateAvailable, setUpdateAvailable] = useState<string | null>(null);
+  // Loaded user hooks (project + global settings.json). Stays mutable
+  // so `/hooks reload` can rescan disk without reconstructing the
+  // loop. The loop holds a parallel reference for its tool-event
+  // dispatch; we keep them in sync via the effect below.
+  const [hookList, setHookList] = useState<ResolvedHook[]>(() =>
+    loadHooks({ projectRoot: codeMode?.rootDir }),
+  );
+  // Working directory reported in every hook's stdin payload. Hook
+  // scripts that `cd $REASONIX_CWD` (or read `cwd` from the JSON
+  // envelope) land in the project root, not the user's shell home.
+  const hookCwd = codeMode?.rootDir ?? process.cwd();
   // Snapshots of every file the *last* edit batch touched, keyed by
   // nothing more than "most recent". `/undo` restores from this ref
   // and nulls it out — one level of undo, Aider-style. Multi-step
@@ -253,6 +265,13 @@ export function App({
   }, [slashMatches]);
 
   const loopRef = useRef<CacheFirstLoop | null>(null);
+  // hookList + hookCwd intentionally NOT in deps — they seed the loop
+  // on first construction (loopRef guards a single instantiation), and
+  // later edits flow in through the mutable `loop.hooks = hookList`
+  // effect below. Putting them in deps would tear down the loop on
+  // every reload, wiping the append-only log mid-session.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: hookList — see comment above
+  // biome-ignore lint/correctness/useExhaustiveDependencies: hookCwd — see comment above
   const loop = useMemo(() => {
     if (loopRef.current) return loopRef.current;
     const client = new DeepSeekClient();
@@ -260,10 +279,27 @@ export function App({
       system,
       toolSpecs: tools?.specs(),
     });
-    const l = new CacheFirstLoop({ client, prefix, tools, model, harvest, branch, session });
+    const l = new CacheFirstLoop({
+      client,
+      prefix,
+      tools,
+      model,
+      harvest,
+      branch,
+      session,
+      hooks: hookList,
+      hookCwd,
+    });
     loopRef.current = l;
     return l;
   }, [model, system, harvest, branch, session, tools]);
+
+  // Keep the loop's hook list in sync after a `/hooks reload`. The
+  // loop's field is intentionally mutable for exactly this case —
+  // construction happens once, hook edits are picked up live.
+  useEffect(() => {
+    loop.hooks = hookList;
+  }, [loop, hookList]);
 
   // Fetch balance once the API key is known. Non-blocking — the
   // session works without it; `null` hides the cell. We also refresh
@@ -547,6 +583,11 @@ export function App({
           planMode,
           setPlanMode: codeMode ? togglePlanMode : undefined,
           clearPendingPlan: codeMode ? clearPendingPlan : undefined,
+          reloadHooks: () => {
+            const fresh = loadHooks({ projectRoot: codeMode?.rootDir });
+            setHookList(fresh);
+            return fresh.length;
+          },
         });
         if (result.exit) {
           transcriptRef.current?.end();
@@ -590,6 +631,32 @@ export function App({
           promptHistory.current.push(text);
           return;
         }
+      }
+
+      // UserPromptSubmit hooks. Exit code 2 from any matching hook
+      // drops the message entirely (the user's text never reaches
+      // the model). Other non-zero exits surface as warning rows but
+      // the prompt still goes through. We render every non-pass
+      // outcome's stderr inline so a "blocked" choice has a visible
+      // explanation.
+      if (hookList.some((h) => h.event === "UserPromptSubmit")) {
+        const promptReport = await runHooks({
+          hooks: hookList,
+          payload: { event: "UserPromptSubmit", cwd: hookCwd, prompt: text },
+        });
+        if (promptReport.outcomes.length > 0) {
+          setHistorical((prev) => [
+            ...prev,
+            ...promptReport.outcomes
+              .filter((o) => o.decision !== "pass")
+              .map((o) => ({
+                id: `hp-${Date.now()}-${Math.random()}`,
+                role: "warning" as const,
+                text: formatHookOutcomeMessage(o),
+              })),
+          ]);
+        }
+        if (promptReport.blocked) return;
       }
 
       // User message is immutable — push to Static immediately.
@@ -809,6 +876,33 @@ export function App({
           }
         }
         flush();
+
+        // Stop hooks — turn has ended (or aborted). Block decisions are
+        // meaningless past this point so we treat every non-pass as a
+        // warning. Natural place for "after every turn, run the
+        // formatter / lint / tests" automation.
+        if (hookList.some((h) => h.event === "Stop")) {
+          const stopReport = await runHooks({
+            hooks: hookList,
+            payload: {
+              event: "Stop",
+              cwd: hookCwd,
+              lastAssistantText: streamRef.text,
+              turn: loop.stats.summary().turns,
+            },
+          });
+          for (const o of stopReport.outcomes) {
+            if (o.decision === "pass") continue;
+            setHistorical((prev) => [
+              ...prev,
+              {
+                id: `hs-${Date.now()}-${Math.random()}`,
+                role: "warning",
+                text: formatHookOutcomeMessage(o),
+              },
+            ]);
+          }
+        }
       } finally {
         if (timer) clearInterval(timer);
         setStreaming(null);
@@ -835,6 +929,8 @@ export function App({
       codeMode,
       codeUndo,
       exit,
+      hookCwd,
+      hookList,
       loop,
       mcpSpecs,
       mcpServers,
