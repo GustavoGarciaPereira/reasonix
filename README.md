@@ -209,8 +209,53 @@ EOF
 
 Re-launch (or `/new`) to pick it up; the prefix is hashed once per
 session to keep the DeepSeek cache warm. `/memory` prints what's
-currently pinned. `REASONIX_MEMORY=off` disables the lookup for CI /
-offline repro.
+currently pinned. `REASONIX_MEMORY=off` disables every memory source
+(REASONIX.md + `~/.reasonix/memory/`) for CI / offline repro.
+
+### User memory — `~/.reasonix/memory/`
+
+A second, **private per-user** memory layer lives under your home
+directory. Unlike `REASONIX.md` it's never committed, and the model
+can write to it itself via the `remember` tool. Two scopes:
+
+- `~/.reasonix/memory/global/` — cross-project (your preferences, tooling).
+- `~/.reasonix/memory/<project-hash>/` — scoped to one sandbox root in
+  `reasonix code` (decisions, local facts, per-repo shortcuts).
+
+Each scope keeps an always-loaded `MEMORY.md` index of one-liners plus
+zero or more `<name>.md` detail files (loaded on demand via
+`recall_memory`). Writes land immediately; pinning into the system
+prompt takes effect on next `/new` or launch so the cache prefix stays
+stable for the current session.
+
+```
+reasonix code › 我用 bun 而不是 npm，请以后都用 bun 跑构建
+
+assistant
+  ▸ tool<remember> → project/bun_build saved
+    "Build command on this machine is `bun run build`"
+
+reasonix code › /memory list
+  project/project     bun_build       Build command on this machine is `bun run build`
+```
+
+**Slash commands:**
+
+- `/memory` — show everything pinned (REASONIX.md + both MEMORY.md scopes)
+- `/memory list` — every memory file with scope + type + description
+- `/memory show <name>` — dump one file's full body
+- `/memory forget <name>` — delete one memory (no LLM turn)
+- `/memory clear <global|project> confirm` — wipe a scope (typed literal)
+
+**Model tools** (available in every session):
+
+- `remember(type, scope, name, description, content)` — save a memory
+- `forget(scope, name)` — delete it
+- `recall_memory(scope, name)` — read the full body when the one-liner isn't enough
+
+Project scope is only available inside `reasonix code` (there has to be
+a real sandbox root to hash); plain `reasonix` / `reasonix chat` gets
+the global scope only.
 
 ```bash
 npx reasonix code src/           # narrower sandbox (only src/ is writable)

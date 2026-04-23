@@ -604,20 +604,20 @@ describe("handleSlash", () => {
       }
     });
 
-    it("prints a how-to when no REASONIX.md exists", () => {
+    it("prints a how-to when no memory (REASONIX.md or ~/.reasonix/memory) exists", () => {
       const r = handleSlash("memory", [], makeLoop(), { memoryRoot: root });
-      expect(r.info).toMatch(/no REASONIX\.md in/);
-      expect(r.info).toMatch(/pin notes/);
+      expect(r.info).toMatch(/no memory pinned/);
+      expect(r.info).toMatch(/REASONIX\.md/);
     });
 
-    it("prints the file contents + path when present", () => {
+    it("prints the REASONIX.md contents + path when present", () => {
       writeFileSync(
         join(root, "REASONIX.md"),
         "# House rules\nSnake case only in this repo.\n",
         "utf8",
       );
       const r = handleSlash("memory", [], makeLoop(), { memoryRoot: root });
-      expect(r.info).toMatch(/▸ project memory:/);
+      expect(r.info).toMatch(/▸ REASONIX\.md:/);
       expect(r.info).toContain("Snake case only");
       expect(r.info).toMatch(/chars/);
     });
@@ -626,12 +626,12 @@ describe("handleSlash", () => {
       writeFileSync(join(root, "REASONIX.md"), "content", "utf8");
       process.env.REASONIX_MEMORY = "off";
       const r = handleSlash("memory", [], makeLoop(), { memoryRoot: root });
-      expect(r.info).toMatch(/project memory is disabled/);
+      expect(r.info).toMatch(/memory is disabled/);
     });
 
     it("refuses to guess a root when memoryRoot is absent", () => {
       const r = handleSlash("memory", [], makeLoop());
-      expect(r.info).toMatch(/no project root/);
+      expect(r.info).toMatch(/no working directory/);
     });
   });
 

@@ -292,7 +292,7 @@ export function registerFilesystemTools(
   registry.register({
     name: "edit_file",
     description:
-      "Apply a SEARCH/REPLACE edit to an existing file. `search` must match exactly (whitespace sensitive) — no regex. The match must be unique in the file; otherwise the edit is refused to avoid surprise rewrites. This flat-string shape replaces the `{oldText, newText}[]` JSON array form that previously triggered R1 DSML hallucinations.",
+      "Apply a SEARCH/REPLACE edit to an existing file. `search` must match exactly (whitespace sensitive) — no regex. The match must be unique in the file; otherwise the edit is refused to avoid surprise rewrites.",
     parameters: {
       type: "object",
       properties: {

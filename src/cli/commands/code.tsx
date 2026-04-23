@@ -23,6 +23,7 @@ import { loadProjectShellAllowed } from "../../config.js";
 import { sanitizeName } from "../../session.js";
 import { ToolRegistry } from "../../tools.js";
 import { registerFilesystemTools } from "../../tools/filesystem.js";
+import { registerMemoryTools } from "../../tools/memory.js";
 import { registerPlanTool } from "../../tools/plan.js";
 import { registerShellTools } from "../../tools/shell.js";
 import { chatCommand } from "./chat.js";
@@ -67,6 +68,10 @@ export async function codeCommand(opts: CodeOptions = {}): Promise<void> {
   // no-op outside plan mode and throws `PlanProposedError` when the
   // user has `/plan`-enabled the session.
   registerPlanTool(tools);
+  // `remember` / `forget` / `recall_memory` — cross-session user memory.
+  // Project scope hashes off rootDir so switching projects gets a fresh
+  // per-project memory store; the global scope is shared across runs.
+  registerMemoryTools(tools, { projectRoot: rootDir });
 
   process.stderr.write(
     `▸ reasonix code: rooted at ${rootDir}, session "${session ?? "(ephemeral)"}" · ${tools.size} native tool(s)\n`,

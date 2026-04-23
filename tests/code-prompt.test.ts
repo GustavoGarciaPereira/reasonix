@@ -40,11 +40,10 @@ describe("codeSystemPrompt", () => {
     expect(out.length).toBeLessThan(CODE_SYSTEM_PROMPT.length + 2300);
   });
 
-  it("still reminds the model about built-in ignores even without a .gitignore", () => {
-    // Base prompt mentions node_modules / dist / .git as "avoid listing"
-    // so new-repo users without .gitignore still get the hint.
-    expect(CODE_SYSTEM_PROMPT).toMatch(/node_modules/);
-    expect(CODE_SYSTEM_PROMPT).toMatch(/dist/);
-    expect(CODE_SYSTEM_PROMPT).toMatch(/\.git/);
+  it("reminds the model to skip dependency / build / VCS dirs", () => {
+    // We don't enumerate specific names in the prompt anymore (too
+    // ecosystem-biased); the principle is stated generically and the
+    // pinned .gitignore block is the authoritative denylist.
+    expect(CODE_SYSTEM_PROMPT).toMatch(/dependency.*build.*VCS|skip/i);
   });
 });

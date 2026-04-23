@@ -15,6 +15,7 @@ import {
   sessionPath as sessionPathOf,
 } from "../../session.js";
 import { ToolRegistry } from "../../tools.js";
+import { registerMemoryTools } from "../../tools/memory.js";
 import { registerWebTools } from "../../tools/web.js";
 import { App } from "../ui/App.js";
 import { SessionPicker } from "../ui/SessionPicker.js";
@@ -241,6 +242,15 @@ export async function chatCommand(opts: ChatOptions): Promise<void> {
   if (searchEnabled()) {
     if (!tools) tools = new ToolRegistry();
     registerWebTools(tools);
+  }
+
+  // Memory tools — available in every session, not just code mode.
+  // Chat-mode callers get global scope only; project scope requires
+  // the seedTools path from `reasonix code` (which registers its own
+  // MemoryStore bound to rootDir before chatCommand runs).
+  if (!opts.seedTools) {
+    if (!tools) tools = new ToolRegistry();
+    registerMemoryTools(tools, {});
   }
 
   // Decide whether to show the session picker. It's gated on: session

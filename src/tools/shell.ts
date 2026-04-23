@@ -410,7 +410,7 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
   registry.register({
     name: "run_command",
     description:
-      "Run a shell command in the project root and return its combined stdout+stderr. Read-only and test commands (git status, ls, npm test, pytest, cargo test, grep, etc.) run immediately. Anything that could mutate state (npm install, git commit, rm, chmod) is refused and the user has to confirm in the TUI. Prefer this over asking the user to run a command manually — after edits, run the project's tests to verify.",
+      "Run a shell command in the project root and return its combined stdout+stderr. Common read-only inspection and test/lint/typecheck commands run immediately; anything that could mutate state, install dependencies, or touch the network is refused until the user confirms it in the TUI. Prefer this over asking the user to run a command manually — after edits, run the project's tests to verify.",
     // Plan-mode gate: allow allowlisted commands through (git status,
     // cargo check, ls, grep …) so the model can actually investigate
     // during planning. Anything that would otherwise trigger a
@@ -427,7 +427,7 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
         command: {
           type: "string",
           description:
-            "Full command line, e.g. 'npm test' or 'git diff src/foo.ts'. Tokenized with POSIX-ish quoting; no shell expansion, no pipes, no redirects.",
+            "Full command line. Tokenized with POSIX-ish quoting; no shell expansion, no pipes, no redirects.",
         },
         timeoutSec: {
           type: "integer",

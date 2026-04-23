@@ -38,10 +38,30 @@ export {
 } from "./project-memory.js";
 export type { ProjectMemory } from "./project-memory.js";
 
+export {
+  MEMORY_INDEX_FILE,
+  MEMORY_INDEX_MAX_CHARS,
+  MemoryStore,
+  USER_MEMORY_DIR,
+  applyMemoryStack,
+  applyUserMemory,
+  projectHash,
+  sanitizeMemoryName,
+} from "./user-memory.js";
+export type {
+  MemoryEntry,
+  MemoryScope,
+  MemoryStoreOptions,
+  MemoryType,
+  WriteInput as MemoryWriteInput,
+} from "./user-memory.js";
+
 export { ToolRegistry } from "./tools.js";
 export type { ToolDefinition, ToolCallContext } from "./tools.js";
 export { registerFilesystemTools } from "./tools/filesystem.js";
 export type { FilesystemToolsOptions } from "./tools/filesystem.js";
+export { registerMemoryTools } from "./tools/memory.js";
+export type { MemoryToolsOptions } from "./tools/memory.js";
 export { PlanProposedError, registerPlanTool } from "./tools/plan.js";
 export type { PlanToolOptions } from "./tools/plan.js";
 export {
@@ -224,4 +244,4 @@ export type {
   JSONSchema,
 } from "./types.js";
 
-export const VERSION = "0.4.19";
+export const VERSION = "0.4.20";
