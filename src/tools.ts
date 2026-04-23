@@ -1,3 +1,4 @@
+import { truncateForModel } from "./mcp/registry.js";
 import { analyzeSchema, flattenSchema, nestArguments } from "./repair/flatten.js";
 import type { JSONSchema, ToolSpec } from "./types.js";
 
@@ -128,7 +129,7 @@ export class ToolRegistry {
   async dispatch(
     name: string,
     argumentsRaw: string | Record<string, unknown>,
-    opts: { signal?: AbortSignal } = {},
+    opts: { signal?: AbortSignal; maxResultChars?: number } = {},
   ): Promise<string> {
     const tool = this._tools.get(name);
     if (!tool) {
@@ -168,7 +169,12 @@ export class ToolRegistry {
 
     try {
       const result = await tool.fn(args, { signal: opts.signal });
-      return typeof result === "string" ? result : JSON.stringify(result);
+      const str = typeof result === "string" ? result : JSON.stringify(result);
+      // Pre-clip at dispatch so a single fat result can't balloon the
+      // log (and disk session file) on its way in. Healing at load time
+      // still catches pre-existing oversize entries; this closes the
+      // door on new ones.
+      return opts.maxResultChars ? truncateForModel(str, opts.maxResultChars) : str;
     } catch (err) {
       const e = err as Error & { toToolResult?: () => unknown };
       // Errors may opt into a richer tool-result shape by implementing

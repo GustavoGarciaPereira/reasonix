@@ -103,6 +103,43 @@ describe("handleSlash", () => {
     expect(loop.model).toBe("deepseek-reasoner");
   });
 
+  it("/model soft-warns when id is not in the fetched catalog but still switches", () => {
+    const loop = makeLoop();
+    const r = handleSlash("model", ["deepseek-made-up"], loop, {
+      models: ["deepseek-chat", "deepseek-reasoner"],
+    });
+    expect(loop.model).toBe("deepseek-made-up");
+    expect(r.info).toMatch(/not in the fetched catalog/);
+    expect(r.info).toMatch(/\/models/);
+  });
+
+  it("/model with no arg and loaded list hints at available ids", () => {
+    const loop = makeLoop();
+    const r = handleSlash("model", [], loop, {
+      models: ["deepseek-chat", "deepseek-reasoner"],
+    });
+    expect(r.info).toMatch(/deepseek-chat \| deepseek-reasoner/);
+  });
+
+  it("/models renders the fetched catalog and marks the current one", () => {
+    const loop = makeLoop();
+    loop.configure({ model: "deepseek-reasoner" });
+    const r = handleSlash("models", [], loop, {
+      models: ["deepseek-chat", "deepseek-reasoner"],
+    });
+    expect(r.info).toMatch(/deepseek-chat/);
+    expect(r.info).toMatch(/▸ deepseek-reasoner\s+\(current\)/);
+    expect(r.info).toMatch(/\/model <id>/);
+  });
+
+  it("/models triggers a refresh and reports fetching when the list hasn't loaded yet", () => {
+    const loop = makeLoop();
+    const refresh = vi.fn();
+    const r = handleSlash("models", [], loop, { models: null, refreshModels: refresh });
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(r.info).toMatch(/fetching \/models/);
+  });
+
   it("/harvest on/off toggles", () => {
     const loop = makeLoop();
     handleSlash("harvest", ["on"], loop);
@@ -592,10 +629,46 @@ describe("handleSlash", () => {
       pendingEditCount: 3,
     });
     expect(r.info).toMatch(/model\s+deepseek-/);
-    expect(r.info).toMatch(/ctx\s+\d+\.?\d*k?\/\d+k/);
+    expect(r.info).toMatch(/ctx\s+\d+\.?\d*K?\/\d+K/);
     expect(r.info).toMatch(/mcp\s+2 server\(s\)/);
     expect(r.info).toMatch(/session.*\(ephemeral|session\s+"/);
     expect(r.info).toMatch(/edits\s+3 pending/);
+  });
+
+  it("/context breaks down tokens across system / tools / log, and flags the heaviest tool results", () => {
+    const loop = makeLoop();
+    // Seed a realistic log: two turns, one with a large tool result.
+    loop.log.append({ role: "user", content: "list me the files" });
+    loop.log.append({
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        { id: "c1", type: "function", function: { name: "list_directory", arguments: '{"path":"."}' } },
+      ],
+    });
+    loop.log.append({
+      role: "tool",
+      tool_call_id: "c1",
+      name: "list_directory",
+      content: "README.md\npackage.json\nsrc/\n".repeat(200),
+    });
+    loop.log.append({ role: "assistant", content: "here are the files" });
+    loop.log.append({ role: "user", content: "now read package.json" });
+
+    const r = handleSlash("context", [], loop);
+    expect(r.info).toMatch(/Next-request estimate/);
+    expect(r.info).toMatch(/system prompt/);
+    expect(r.info).toMatch(/tool specs/);
+    expect(r.info).toMatch(/log \(all turns\)/);
+    // Heaviest-tool section must surface the list_directory result.
+    expect(r.info).toMatch(/Top tool results/);
+    expect(r.info).toMatch(/list_directory/);
+  });
+
+  it("/context handles an empty log without crashing", () => {
+    const r = handleSlash("context", [], makeLoop());
+    expect(r.info).toMatch(/Next-request estimate/);
+    expect(r.info).not.toMatch(/Top tool results/);
   });
 
   it("/status with pendingEditCount=0 hides the edits line", () => {

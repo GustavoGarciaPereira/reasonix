@@ -826,6 +826,30 @@ export class CacheFirstLoop {
       //      tool_calls"). The summary is about what was LEARNED so far,
       //      not what we intended to do next.
       const ctxMax = DEEPSEEK_CONTEXT_TOKENS[this.model] ?? DEFAULT_CONTEXT_TOKENS;
+      // Proactive tier: between 60% and 80%, pre-shrink oversized tool
+      // results to a moderate cap (16k chars ≈ 4k tokens) so the next
+      // iter doesn't slam straight into the 80% reactive path — which
+      // shrinks far more aggressively (4k cap) and risks losing useful
+      // tail info from prior results. This catches the slow-growth
+      // pattern (lots of medium-sized reads) before it compounds.
+      if (usage) {
+        const ratio = usage.promptTokens / ctxMax;
+        if (ratio > 0.6 && ratio <= 0.8) {
+          const before = usage.promptTokens;
+          const soft = this.compact(16_000);
+          if (soft.healedCount > 0) {
+            const approxSaved = Math.round(soft.charsSaved / 4);
+            const after = Math.max(0, before - approxSaved);
+            yield {
+              turn: this._turn,
+              role: "warning",
+              content: `context ${before.toLocaleString()}/${ctxMax.toLocaleString()} (${Math.round(
+                ratio * 100,
+              )}%) — proactively compacted ${soft.healedCount} tool result(s) to 16k, saved ~${approxSaved.toLocaleString()} tokens (now ~${after.toLocaleString()}). Staying ahead of the 80% guard.`,
+            };
+          }
+        }
+      }
       if (usage && usage.promptTokens / ctxMax > 0.8) {
         const before = usage.promptTokens;
         const compactResult = this.compact(4000);
@@ -921,7 +945,10 @@ export class CacheFirstLoop {
           ).trim();
           result = `[hook block] ${blocking?.hook.command ?? "<unknown>"}\n${reason}`;
         } else {
-          result = await this.tools.dispatch(name, args, { signal });
+          result = await this.tools.dispatch(name, args, {
+            signal,
+            maxResultChars: DEFAULT_MAX_RESULT_CHARS,
+          });
 
           // PostToolUse hooks — block is meaningless after the fact, so
           // every non-pass outcome is a warning. Hooks here are the

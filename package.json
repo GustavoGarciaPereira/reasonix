@@ -1,6 +1,6 @@
 {
   "name": "reasonix",
-  "version": "0.4.28",
+  "version": "0.5.0",
   "description": "DeepSeek-native agent framework: cache-first loop, R1 thought harvesting, tool-call repair.",
   "type": "module",
   "bin": {
@@ -17,6 +17,7 @@
   },
   "files": [
     "dist",
+    "data/deepseek-tokenizer.json.gz",
     "README.md",
     "LICENSE"
   ],

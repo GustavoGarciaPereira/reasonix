@@ -58,6 +58,11 @@ export function PlanConfirm({ plan, onChoose, maxRenderedChars, projectRoot }: P
           ▸ plan submitted — awaiting your review
         </Text>
       </Box>
+      <Box>
+        <Text color="cyan" dimColor>
+          {"──────────────────────────────────────────"}
+        </Text>
+      </Box>
       <Box marginTop={1} flexDirection="column">
         <Markdown text={visible} projectRoot={projectRoot} />
       </Box>
@@ -91,6 +96,8 @@ export function PlanConfirm({ plan, onChoose, maxRenderedChars, projectRoot }: P
             },
           ]}
           onSubmit={(v) => onChoose(v as PlanConfirmChoice)}
+          onCancel={() => onChoose("cancel")}
+          footer="[↑↓] navigate  ·  [Enter] select  ·  [Esc] cancel"
         />
       </Box>
     </Box>

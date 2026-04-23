@@ -156,6 +156,11 @@ export function App({
   // tracks reality. `null` means either the endpoint failed or we
   // haven't fetched yet; the panel hides the cell in that case.
   const [balance, setBalance] = useState<{ currency: string; total: number } | null>(null);
+  // Model catalog fetched from DeepSeek's /models endpoint once at
+  // launch. `null` while the call is in flight or failed; `[]` means
+  // the API answered with zero models (unlikely but possible). Powers
+  // /models and validation in /model.
+  const [models, setModels] = useState<string[] | null>(null);
   // Latest published version the npm registry returned, REGARDLESS
   // of whether it's newer than what we're running. `null` only while
   // the background check is in flight or when the network fails —
@@ -375,6 +380,21 @@ export function App({
     };
   }, [loop]);
 
+  // Fetch the model catalog from DeepSeek once. Same pattern as
+  // balance: silent degrade on failure (stays null), so /models can
+  // tell "still loading / offline" apart from "loaded, here's the list."
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const list = await loop.client.listModels().catch(() => null);
+      if (cancelled || !list) return;
+      setModels(list.data.map((m) => m.id));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loop]);
+
   // Background registry check — 24h disk cache absorbs repeated
   // launches, timeout bounded so a flaky network doesn't delay the
   // notification. Set to `null` on failure (silent: no network, no
@@ -438,8 +458,8 @@ export function App({
       setSubagentActivity(null);
       const seconds = ((ev.elapsedMs ?? 0) / 1000).toFixed(1);
       const summary = ev.error
-        ? `🧬 subagent "${ev.task}" failed after ${seconds}s · ${ev.iter ?? 0} tool call(s) — ${ev.error}`
-        : `🧬 subagent "${ev.task}" done in ${seconds}s · ${ev.iter ?? 0} tool call(s) · ${ev.turns ?? 0} turn(s)`;
+        ? `⌬ subagent "${ev.task}" failed after ${seconds}s · ${ev.iter ?? 0} tool call(s) — ${ev.error}`
+        : `⌬ subagent "${ev.task}" done in ${seconds}s · ${ev.iter ?? 0} tool call(s) · ${ev.turns ?? 0} turn(s)`;
       setHistorical((prev) => [
         ...prev,
         {
@@ -697,6 +717,13 @@ export function App({
               if (fresh) setLatestVersion(fresh);
             })();
           },
+          models,
+          refreshModels: () => {
+            void (async () => {
+              const list = await loop.client.listModels().catch(() => null);
+              if (list) setModels(list.data.map((m) => m.id));
+            })();
+          },
         });
         if (result.exit) {
           transcriptRef.current?.end();
@@ -770,7 +797,14 @@ export function App({
 
       // User message is immutable — push to Static immediately.
       promptHistory.current.push(text);
-      setHistorical((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", text }]);
+      setHistorical((prev) => [
+        ...prev,
+        // `leadSeparator`: thin rule above this user turn when history
+        // isn't empty — visual pacing for multi-turn sessions. First
+        // user message leaves it off so the UI doesn't open with a
+        // dangling divider.
+        { id: `u-${Date.now()}`, role: "user", text, leadSeparator: prev.length > 0 },
+      ]);
 
       const assistantId = `a-${Date.now()}`;
       // Refs are the source of truth for accumulated streaming text; the React
@@ -1055,6 +1089,7 @@ export function App({
       latestVersion,
       mcpSpecs,
       mcpServers,
+      models,
       planMode,
       session,
       slashSelected,
@@ -1272,6 +1307,7 @@ export function App({
           branchBudget={loop.branchOptions.budget}
           planMode={planMode}
           balance={balance}
+          busy={busy}
           updateAvailable={updateAvailable}
         />
         <Static items={historical}>
@@ -1392,7 +1428,7 @@ function StatusRow({ text }: { text: string }) {
  * Live one-line indicator for a running subagent. Sits below the
  * OngoingToolRow (the parent's tool dispatch row for `spawn_subagent`)
  * so the user sees both layers at once: outer "spawn_subagent
- * running…" + inner "🧬 subagent: <task> · iter N · 12.3s". Cleared
+ * running…" + inner "⌬ subagent: <task> · iter N · 12.3s". Cleared
  * when the subagent ends; a one-line summary lands in historical.
  */
 function SubagentRow({
@@ -1405,7 +1441,7 @@ function SubagentRow({
   return (
     <Box paddingLeft={2}>
       <Text color="magenta">{SPINNER_FRAMES[tick % SPINNER_FRAMES.length]}</Text>
-      <Text color="magenta">{` 🧬 subagent: ${activity.task}`}</Text>
+      <Text color="magenta">{` ⌬ subagent: ${activity.task}`}</Text>
       <Text dimColor>{` · iter ${activity.iter} · ${seconds}s`}</Text>
     </Box>
   );

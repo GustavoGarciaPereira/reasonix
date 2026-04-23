@@ -1,12 +1,24 @@
 import type { Usage } from "./client.js";
 
-/** USD per 1M tokens. Update as DeepSeek pricing changes. */
+/**
+ * USD per 1M tokens. Source of truth is DeepSeek's CNY price sheet at
+ * https://api-docs.deepseek.com/zh-cn/quick_start/pricing (as of
+ * 2026-04-23): chat and reasoner are unified at ¥0.2 / ¥2 / ¥3 per 1M
+ * tokens (cache-hit input / cache-miss input / output). Converted at
+ * a fixed 7.2 CNY/USD rate so stats stay stable across the daily FX
+ * drift; revisit if the rate moves more than ±5%.
+ *
+ * Historical note: the pre-unification prices were chat $0.07/$0.27/$1.10
+ * and reasoner $0.14/$0.55/$2.19. Sessions logged under those values
+ * in `~/.reasonix/usage.jsonl` remain as-is (USD frozen at record time)
+ * — we never retroactively rewrite billing history.
+ */
 export const DEEPSEEK_PRICING: Record<
   string,
   { inputCacheHit: number; inputCacheMiss: number; output: number }
 > = {
-  "deepseek-chat": { inputCacheHit: 0.07, inputCacheMiss: 0.27, output: 1.1 },
-  "deepseek-reasoner": { inputCacheHit: 0.14, inputCacheMiss: 0.55, output: 2.19 },
+  "deepseek-chat": { inputCacheHit: 0.028, inputCacheMiss: 0.28, output: 0.42 },
+  "deepseek-reasoner": { inputCacheHit: 0.028, inputCacheMiss: 0.28, output: 0.42 },
 };
 
 /** Reference Claude Sonnet 4.6 pricing (USD per 1M tokens). */

@@ -295,7 +295,7 @@ function InlineMd({
         if (status && !status.ok) {
           parts.push(
             <Text key={`l${idx++}`} color="red" strikethrough>
-              {`${linkText} ❌`}
+              {`${linkText} ✗`}
             </Text>,
           );
         } else {
@@ -902,7 +902,7 @@ function BrokenCitationsBlock({ items }: { items: Array<{ url: string; reason: s
       {items.map((b, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: list is derived from a Map iteration order, stable per render
         <Text key={`bc-${i}`} color="red">
-          {`  ❌ ${b.url} → ${b.reason}`}
+          {`  ✗ ${b.url} → ${b.reason}`}
         </Text>
       ))}
     </Box>

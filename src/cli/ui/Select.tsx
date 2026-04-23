@@ -28,6 +28,13 @@ export interface SingleSelectProps<V extends string> {
   initialValue?: V;
   onSubmit: (value: V) => void;
   onCancel?: () => void;
+  /**
+   * Optional footer rendered dim beneath the list, e.g.
+   * `"↑/↓ navigate · Enter select · Esc cancel"`. Makes keyboard
+   * affordances discoverable — otherwise new users hit `y`/`n` and
+   * wonder why nothing happens.
+   */
+  footer?: string;
 }
 
 export function SingleSelect<V extends string>({
@@ -35,6 +42,7 @@ export function SingleSelect<V extends string>({
   initialValue,
   onSubmit,
   onCancel,
+  footer,
 }: SingleSelectProps<V>) {
   const initialIndex = Math.max(
     0,
@@ -65,6 +73,11 @@ export function SingleSelect<V extends string>({
           marker={i === index ? "▸" : " "}
         />
       ))}
+      {footer ? (
+        <Box marginTop={1}>
+          <Text dimColor>{footer}</Text>
+        </Box>
+      ) : null}
     </Box>
   );
 }

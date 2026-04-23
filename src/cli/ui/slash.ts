@@ -12,6 +12,7 @@ import { PROJECT_MEMORY_FILE, memoryEnabled, readProjectMemory } from "../../pro
 import { deleteSession, listSessions } from "../../session.js";
 import { SkillStore } from "../../skills.js";
 import { DEEPSEEK_CONTEXT_TOKENS, DEFAULT_CONTEXT_TOKENS } from "../../telemetry.js";
+import { countTokens } from "../../tokenizer.js";
 import { aggregateUsage, defaultUsageLogPath, readUsageLog } from "../../usage.js";
 import { type MemoryScope, MemoryStore } from "../../user-memory.js";
 import { VERSION, compareVersions, isNpxInstall } from "../../version.js";
@@ -142,6 +143,20 @@ export interface SlashContext {
    * with no retry path.
    */
   refreshLatestVersion?: () => void;
+  /**
+   * Model catalog fetched from DeepSeek's `/models` endpoint at App
+   * mount. `null` → still in flight or the call failed (auth / offline);
+   * `[]` → the API answered with zero entries. `/models` uses this to
+   * render the list, and `/model <id>` uses it for soft validation
+   * (warn-only — we still switch even on unknown ids since the list
+   * can lag a newly-released model).
+   */
+  models?: string[] | null;
+  /**
+   * Fire-and-forget refresh for the models list. Lets `/models` retry
+   * after a flaky first fetch without needing async slash support.
+   */
+  refreshModels?: () => void;
 }
 
 export interface McpServerSummary {
@@ -182,6 +197,7 @@ export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
     summary: "one-tap model + harvest + branch bundle",
   },
   { cmd: "model", argsHint: "<id>", summary: "switch DeepSeek model id" },
+  { cmd: "models", summary: "list available models fetched from DeepSeek /models" },
   { cmd: "harvest", argsHint: "[on|off]", summary: "toggle Pillar-2 plan-state extraction" },
   { cmd: "branch", argsHint: "<N|off>", summary: "run N parallel samples per turn (N>=2)" },
   { cmd: "mcp", summary: "list MCP servers + tools attached to this session" },
@@ -211,6 +227,10 @@ export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
       "cross-session cost dashboard (today / week / month / all-time · cache hit · vs Claude)",
   },
   { cmd: "think", summary: "dump the last turn's full R1 reasoning (reasoner only)" },
+  {
+    cmd: "context",
+    summary: "break down where context tokens are going: system / tools / per-turn log",
+  },
   { cmd: "retry", summary: "truncate & resend your last message (fresh sample)" },
   { cmd: "compact", argsHint: "[cap]", summary: "shrink oversized tool results in the log" },
   { cmd: "sessions", summary: "list saved sessions (current marked with ▸)" },
@@ -617,6 +637,76 @@ export function handleSlash(
       };
     }
 
+    case "context": {
+      // Measure each slice of the next request locally so the user can
+      // see *where* context is being spent — a much more useful number
+      // than the "last turn's total" the gauge shows. Tokenization is
+      // lazy so the first /context call carries the data-file load
+      // cost (~100ms); subsequent calls are pure compute.
+      const systemTokens = countTokens(loop.prefix.system);
+      const toolsTokens = countTokens(JSON.stringify(loop.prefix.toolSpecs));
+      const entries = loop.log.toMessages();
+      let userTokens = 0;
+      let assistantTokens = 0;
+      let toolResultTokens = 0;
+      let toolCallTokens = 0;
+      const toolBreakdown: Array<{ name: string; tokens: number; turn: number }> = [];
+      let logTurn = 0;
+      for (const e of entries) {
+        const content = typeof e.content === "string" ? e.content : "";
+        if (e.role === "user") {
+          userTokens += countTokens(content);
+          logTurn += 1;
+        } else if (e.role === "assistant") {
+          assistantTokens += countTokens(content);
+          if (Array.isArray(e.tool_calls) && e.tool_calls.length > 0) {
+            toolCallTokens += countTokens(JSON.stringify(e.tool_calls));
+          }
+        } else if (e.role === "tool") {
+          const n = countTokens(content);
+          toolResultTokens += n;
+          toolBreakdown.push({ name: e.name ?? "?", tokens: n, turn: logTurn });
+        }
+      }
+      const logTokens = userTokens + assistantTokens + toolResultTokens + toolCallTokens;
+      const total = systemTokens + toolsTokens + logTokens;
+      const ctxMax = DEEPSEEK_CONTEXT_TOKENS[loop.model] ?? DEFAULT_CONTEXT_TOKENS;
+      const pct = (n: number) => (total > 0 ? `${Math.round((n / total) * 100)}%`.padStart(4) : "  0%");
+      const row = (label: string, n: number, note = "") =>
+        `  ${label.padEnd(20)}${compactNum(n).padStart(8)} tokens ${pct(n)}${note ? `   ${note}` : ""}`;
+
+      const lines = [
+        `Next-request estimate: ~${compactNum(total)} tokens of ${compactNum(ctxMax)} (${Math.round(
+          (total / ctxMax) * 100,
+        )}% of window)`,
+        "",
+        row("system prompt", systemTokens),
+        row("tool specs", toolsTokens, `(${loop.prefix.toolSpecs.length} tools)`),
+        row("log (all turns)", logTokens, `(${entries.length} messages)`),
+        `    user                ${compactNum(userTokens).padStart(8)} tokens`,
+        `    assistant           ${compactNum(assistantTokens).padStart(8)} tokens`,
+        `    tool-call args      ${compactNum(toolCallTokens).padStart(8)} tokens`,
+        `    tool results        ${compactNum(toolResultTokens).padStart(8)} tokens`,
+      ];
+
+      // Top 5 heaviest tool results — usually where unexpected bloat
+      // lives (a big read_file, an unfiltered search_content).
+      if (toolBreakdown.length > 0) {
+        const top = [...toolBreakdown].sort((a, b) => b.tokens - a.tokens).slice(0, 5);
+        lines.push("");
+        lines.push(`Top tool results by cost (of ${toolBreakdown.length} total):`);
+        for (const t of top) {
+          lines.push(`    turn ${String(t.turn).padStart(3)}  ${t.name.padEnd(22)} ${compactNum(t.tokens).padStart(8)} tokens`);
+        }
+      }
+
+      lines.push("");
+      lines.push(
+        "Count is a local estimate (DeepSeek V3 tokenizer, pure-TS port); server prompt_tokens may add ~3-6% for chat-template role markers.",
+      );
+      return { info: lines.join("\n") };
+    }
+
     case "status": {
       const branchBudget = loop.branchOptions.budget ?? 1;
       const ctxMax = DEEPSEEK_CONTEXT_TOKENS[loop.model] ?? DEFAULT_CONTEXT_TOKENS;
@@ -650,9 +740,49 @@ export function handleSlash(
 
     case "model": {
       const id = args[0];
-      if (!id) return { info: "usage: /model <id>   (try deepseek-chat or deepseek-reasoner)" };
+      const known = ctx.models ?? null;
+      if (!id) {
+        const hint =
+          known && known.length > 0
+            ? known.join(" | ")
+            : "try deepseek-chat or deepseek-reasoner — run /models to fetch the live list";
+        return { info: `usage: /model <id>   (${hint})` };
+      }
       loop.configure({ model: id });
+      // Soft validation: if we have the live list and the id isn't in
+      // it, flag a warning but still switch — DeepSeek may have just
+      // released something we haven't indexed yet, and refusing would
+      // be worse than a bad API error on the next call.
+      if (known && known.length > 0 && !known.includes(id)) {
+        return {
+          info: `model → ${id}   (⚠ not in the fetched catalog: ${known.join(", ")}. If this is wrong the next call will 400 — run /models to refresh.)`,
+        };
+      }
       return { info: `model → ${id}` };
+    }
+
+    case "models": {
+      const list = ctx.models ?? null;
+      if (list === null) {
+        ctx.refreshModels?.();
+        return {
+          info: "fetching /models from DeepSeek… run /models again in a moment. If it stays empty, your API key may lack permission or the network is blocked.",
+        };
+      }
+      if (list.length === 0) {
+        return { info: "DeepSeek /models returned an empty list. Try /models again, or check your account status at api-docs.deepseek.com." };
+      }
+      const current = loop.model;
+      const lines = list.map((id) => (id === current ? `▸ ${id}  (current)` : `  ${id}`));
+      return {
+        info: [
+          `Available models (DeepSeek /models · ${list.length} total):`,
+          "",
+          ...lines,
+          "",
+          "Switch with: /model <id>",
+        ].join("\n"),
+      };
     }
 
     case "harvest": {
@@ -1176,10 +1306,16 @@ function formatToolList(history: Array<{ toolName: string; text: string }>): str
   return lines.join("\n");
 }
 
+/**
+ * Binary-K token formatter: 1234 → "1.2K", 131072 → "128K". Matches
+ * DeepSeek's doc ("128K context"). Every call site here is rendering
+ * token counts — if a future caller wants decimal-K for dollars or
+ * similar, add a separate formatter rather than reusing this one.
+ */
 function compactNum(n: number): string {
-  if (n < 1000) return String(n);
-  const k = n / 1000;
-  return k >= 100 ? `${Math.round(k)}k` : `${k.toFixed(1)}k`;
+  if (n < 1024) return String(n);
+  const k = n / 1024;
+  return k >= 100 ? `${Math.round(k)}K` : `${k.toFixed(1)}K`;
 }
 
 function stripOuterQuotes(s: string): string {

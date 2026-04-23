@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { Usage } from "../src/client.js";
-import { SessionStats, costUsd, inputCostUsd, outputCostUsd } from "../src/telemetry.js";
+import {
+  DEEPSEEK_PRICING,
+  SessionStats,
+  costUsd,
+  inputCostUsd,
+  outputCostUsd,
+} from "../src/telemetry.js";
+
+// Derive expected figures from the pricing table so the tests don't
+// re-bake stale constants every time DeepSeek updates the price sheet.
+// The `costUsd` formula under test is:
+//   (hitT * hit + missT * miss + outT * out) / 1e6
+const CHAT = DEEPSEEK_PRICING["deepseek-chat"]!;
 
 describe("Usage.cacheHitRatio", () => {
   it("computes hit ratio", () => {
@@ -16,8 +28,10 @@ describe("costUsd", () => {
   it("applies DeepSeek pricing tiers", () => {
     const u = new Usage(1000, 100, 0, 800, 200);
     const c = costUsd("deepseek-chat", u);
-    // (800 * 0.07 + 200 * 0.27 + 100 * 1.10) / 1e6
-    expect(c).toBeCloseTo((800 * 0.07 + 200 * 0.27 + 100 * 1.1) / 1_000_000, 10);
+    expect(c).toBeCloseTo(
+      (800 * CHAT.inputCacheHit + 200 * CHAT.inputCacheMiss + 100 * CHAT.output) / 1_000_000,
+      10,
+    );
   });
 
   it("returns 0 for unknown model", () => {
@@ -56,12 +70,16 @@ describe("SessionStats", () => {
     const stats = new SessionStats();
     stats.record(1, "deepseek-chat", new Usage(1000, 100, 1100, 800, 200));
     const s = stats.summary();
-    // input: (800 * 0.07 + 200 * 0.27) / 1e6 = 0.000056 + 0.000054 = 0.00011
-    // output: 100 * 1.10 / 1e6 = 0.00011
-    expect(s.totalInputCostUsd).toBeCloseTo((800 * 0.07 + 200 * 0.27) / 1_000_000, 10);
-    expect(s.totalOutputCostUsd).toBeCloseTo((100 * 1.1) / 1_000_000, 10);
+    // `summary()` rounds USD figures to 6 decimals, so we match at 6 —
+    // the raw formula at higher precision is exercised by the
+    // `inputCostUsd` / `outputCostUsd` tests below.
+    expect(s.totalInputCostUsd).toBeCloseTo(
+      (800 * CHAT.inputCacheHit + 200 * CHAT.inputCacheMiss) / 1_000_000,
+      6,
+    );
+    expect(s.totalOutputCostUsd).toBeCloseTo((100 * CHAT.output) / 1_000_000, 6);
     // Sum of input+output equals total (within rounding).
-    expect(s.totalInputCostUsd + s.totalOutputCostUsd).toBeCloseTo(s.totalCostUsd, 9);
+    expect(s.totalInputCostUsd + s.totalOutputCostUsd).toBeCloseTo(s.totalCostUsd, 6);
   });
 });
 
@@ -69,13 +87,26 @@ describe("inputCostUsd / outputCostUsd", () => {
   it("input cost covers cache-hit + cache-miss but NOT completion", () => {
     const u = new Usage(1000, 100, 1100, 800, 200);
     const i = inputCostUsd("deepseek-chat", u);
-    expect(i).toBeCloseTo((800 * 0.07 + 200 * 0.27) / 1_000_000, 10);
+    expect(i).toBeCloseTo(
+      (800 * CHAT.inputCacheHit + 200 * CHAT.inputCacheMiss) / 1_000_000,
+      10,
+    );
   });
 
   it("output cost covers completion only", () => {
     const u = new Usage(1000, 100, 1100, 800, 200);
     const o = outputCostUsd("deepseek-chat", u);
-    expect(o).toBeCloseTo((100 * 1.1) / 1_000_000, 10);
+    expect(o).toBeCloseTo((100 * CHAT.output) / 1_000_000, 10);
+  });
+
+  it("chat and reasoner are unified at the same price", () => {
+    // Post-unification (2026-04): DeepSeek charges identically for both
+    // models. If this test starts failing, either DeepSeek reintroduced
+    // tiered pricing (update the constants) or someone accidentally
+    // edited only one entry — catch that before shipping.
+    const chat = DEEPSEEK_PRICING["deepseek-chat"]!;
+    const reasoner = DEEPSEEK_PRICING["deepseek-reasoner"]!;
+    expect(reasoner).toEqual(chat);
   });
 
   it("both return 0 for an unknown model", () => {

@@ -51,7 +51,7 @@ export function SlashSuggestions({
         <SuggestionRow key={spec.cmd} spec={spec} isSelected={windowStart + i === selectedIndex} />
       ))}
       {hiddenBelow > 0 ? <Text dimColor> ↓ {hiddenBelow} more below</Text> : null}
-      <Text dimColor> ↑/↓ navigate · Tab or Enter to pick</Text>
+      <Text dimColor> [↑↓] navigate  ·  [Tab]/[Enter] pick</Text>
     </Box>
   );
 }

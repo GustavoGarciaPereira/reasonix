@@ -64,6 +64,23 @@ export interface UserBalance {
   balance_infos: BalanceInfo[];
 }
 
+/**
+ * Response shape for DeepSeek's `/models` endpoint. Mirrors the OpenAI
+ * models list shape DeepSeek copied — `id` is the model name to pass to
+ * `/chat/completions`, `owned_by` is the provider string (always
+ * `"deepseek"` today).
+ */
+export interface ModelInfo {
+  id: string;
+  object: "model";
+  owned_by: string;
+}
+
+export interface ModelList {
+  object: "list";
+  data: ModelInfo[];
+}
+
 export interface DeepSeekClientOptions {
   apiKey?: string;
   baseUrl?: string;
@@ -127,6 +144,29 @@ export class DeepSeekClient {
       if (!resp.ok) return null;
       const data = (await resp.json()) as UserBalance;
       if (!data || !Array.isArray(data.balance_infos)) return null;
+      return data;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Fetch the model catalog DeepSeek currently exposes. Today this is
+   * `deepseek-chat` (V3) and `deepseek-reasoner` (R1), but querying is
+   * the only way to learn about new ones without a Reasonix release.
+   * Returns null on any network/auth failure so callers can degrade
+   * gracefully — e.g. `/models` falls back to the hardcoded hint.
+   */
+  async listModels(opts: { signal?: AbortSignal } = {}): Promise<ModelList | null> {
+    try {
+      const resp = await this._fetch(`${this.baseUrl}/models`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+        signal: opts.signal,
+      });
+      if (!resp.ok) return null;
+      const data = (await resp.json()) as ModelList;
+      if (!data || !Array.isArray(data.data)) return null;
       return data;
     } catch {
       return null;

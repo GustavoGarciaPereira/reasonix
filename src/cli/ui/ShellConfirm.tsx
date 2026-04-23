@@ -33,6 +33,11 @@ export function ShellConfirm({ command, allowPrefix, onChoose }: ShellConfirmPro
           ▸ model wants to run a shell command
         </Text>
       </Box>
+      <Box>
+        <Text color="yellow" dimColor>
+          {"──────────────────────────────────────────"}
+        </Text>
+      </Box>
       <Box marginTop={1}>
         <Text>
           <Text dimColor>{"$ "}</Text>
@@ -60,6 +65,8 @@ export function ShellConfirm({ command, allowPrefix, onChoose }: ShellConfirmPro
             },
           ]}
           onSubmit={(v) => onChoose(v as ShellConfirmChoice)}
+          onCancel={() => onChoose("deny")}
+          footer="[↑↓] navigate  ·  [Enter] select  ·  [Esc] deny"
         />
       </Box>
     </Box>

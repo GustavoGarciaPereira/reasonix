@@ -145,6 +145,31 @@ describe("ToolRegistry", () => {
     expect(received).toEqual({ a: { b: { c: "hi" } } });
   });
 
+  it("truncates oversized results when maxResultChars is set", async () => {
+    const reg = new ToolRegistry();
+    const big = "x".repeat(50_000);
+    reg.register({
+      name: "bloat",
+      parameters: { type: "object", properties: {} },
+      fn: () => big,
+    });
+    const out = await reg.dispatch("bloat", "{}", { maxResultChars: 1000 });
+    expect(out.length).toBeLessThan(2000);
+    expect(out).toMatch(/truncated/);
+  });
+
+  it("passes results through unchanged when maxResultChars is absent", async () => {
+    const reg = new ToolRegistry();
+    const big = "x".repeat(50_000);
+    reg.register({
+      name: "bloat",
+      parameters: { type: "object", properties: {} },
+      fn: () => big,
+    });
+    const out = await reg.dispatch("bloat", "{}");
+    expect(out.length).toBe(50_000);
+  });
+
   it("autoFlatten:false opts out", () => {
     const reg = new ToolRegistry({ autoFlatten: false });
     reg.register({

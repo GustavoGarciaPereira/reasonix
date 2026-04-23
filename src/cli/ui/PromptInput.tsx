@@ -83,8 +83,8 @@ export function PromptInput({
   );
 
   const effectivePlaceholder = disabled
-    ? (placeholder ?? "…waiting for response…")
-    : (placeholder ?? "type a message, or /command · Ctrl+J for newline");
+    ? (placeholder ?? "…waiting for response…  ·  [Esc] to stop")
+    : (placeholder ?? "type a message, or /command  ·  [Shift+Enter] / [Ctrl+J] newline");
 
   const lines = value.length > 0 ? value.split("\n") : [""];
   const borderColor = disabled ? "gray" : "cyan";

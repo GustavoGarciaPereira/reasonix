@@ -494,6 +494,97 @@ describe("CacheFirstLoop (non-streaming)", () => {
     expect(last!.forcedSummary).toBeFalsy();
   });
 
+  it("proactively compacts oversized tool results between 60%-80% of the context window", async () => {
+    const reg = new ToolRegistry();
+    reg.register({
+      name: "probe",
+      description: "no-op",
+      parameters: { type: "object", properties: {} },
+      fn: async () => "ok",
+    });
+    const responses: FakeResponseShape[] = [
+      // 131k * 0.72 ≈ 94,320 tokens — squarely in the proactive band.
+      {
+        content: "",
+        tool_calls: [{ id: "c1", type: "function", function: { name: "probe", arguments: "{}" } }],
+        usage: {
+          prompt_tokens: 95_000,
+          completion_tokens: 10,
+          total_tokens: 95_010,
+          prompt_cache_hit_tokens: 70_000,
+          prompt_cache_miss_tokens: 25_000,
+        },
+      },
+      { content: "done." },
+    ];
+    const client = makeClient(responses);
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "s", toolSpecs: reg.specs() }),
+      tools: reg,
+      stream: false,
+      maxToolIters: 64,
+    });
+    // Seed an oversized tool result (>16k cap) so proactive compact has
+    // work to do. Anything under 16k would be a no-op and skip the warning.
+    loop.log.append({ role: "user", content: "prior" });
+    loop.log.append({
+      role: "tool",
+      tool_call_id: "prior",
+      content: "Z".repeat(40_000),
+    });
+
+    const events: { role: string; content?: string; forcedSummary?: boolean }[] = [];
+    for await (const ev of loop.step("continue")) {
+      events.push({ role: ev.role, content: ev.content, forcedSummary: ev.forcedSummary });
+    }
+
+    const proactive = events.find(
+      (e) => e.role === "warning" && /proactively compacted/.test(e.content ?? ""),
+    );
+    expect(proactive).toBeDefined();
+    expect(proactive!.content).toMatch(/16k/);
+    // 60%-80% band must NOT force a summary (that's the 80% reactive path).
+    const finals = events.filter((e) => e.role === "assistant_final");
+    expect(finals[finals.length - 1]!.forcedSummary).toBeFalsy();
+  });
+
+  it("pre-clips new tool results at dispatch so they never enter the log oversized", async () => {
+    const reg = new ToolRegistry();
+    // Tool returns ~50k chars; DEFAULT_MAX_RESULT_CHARS is 32k, so the
+    // log entry must be smaller than the raw return value.
+    const huge = "A".repeat(50_000);
+    reg.register({
+      name: "big",
+      description: "returns a lot",
+      parameters: { type: "object", properties: {} },
+      fn: async () => huge,
+    });
+    const responses: FakeResponseShape[] = [
+      {
+        content: "",
+        tool_calls: [{ id: "c1", type: "function", function: { name: "big", arguments: "{}" } }],
+      },
+      { content: "summarized." },
+    ];
+    const client = makeClient(responses);
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "s", toolSpecs: reg.specs() }),
+      tools: reg,
+      stream: false,
+    });
+    for await (const _ev of loop.step("go")) {
+      /* drain */
+    }
+    const toolEntry = loop.log.toMessages().find((m) => m.role === "tool");
+    expect(toolEntry).toBeDefined();
+    const content = typeof toolEntry!.content === "string" ? toolEntry!.content : "";
+    // Well under the raw 50k — pre-clip fired before append.
+    expect(content.length).toBeLessThan(40_000);
+    expect(content).toMatch(/truncated/);
+  });
+
   it("buildMessages strips a dangling assistant-with-tool_calls tail — defensive against 'insufficient tool messages' 400", async () => {
     // Craft a log where the last entry is an assistant message with
     // tool_calls but no matching tool responses. This is the shape
