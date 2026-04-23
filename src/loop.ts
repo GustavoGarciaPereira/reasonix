@@ -13,7 +13,11 @@ import {
   formatHookOutcomeMessage,
   runHooks,
 } from "./hooks.js";
-import { DEFAULT_MAX_RESULT_CHARS, truncateForModel } from "./mcp/registry.js";
+import {
+  DEFAULT_MAX_RESULT_CHARS,
+  DEFAULT_MAX_RESULT_TOKENS,
+  truncateForModel,
+} from "./mcp/registry.js";
 import { AppendOnlyLog, type ImmutablePrefix, VolatileScratch } from "./memory.js";
 import { type RepairReport, ToolCallRepair } from "./repair/index.js";
 import { appendSessionMessage, loadSessionMessages, rewriteSession } from "./session.js";
@@ -947,7 +951,7 @@ export class CacheFirstLoop {
         } else {
           result = await this.tools.dispatch(name, args, {
             signal,
-            maxResultChars: DEFAULT_MAX_RESULT_CHARS,
+            maxResultTokens: DEFAULT_MAX_RESULT_TOKENS,
           });
 
           // PostToolUse hooks — block is meaningless after the fact, so

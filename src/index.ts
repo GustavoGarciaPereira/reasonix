@@ -174,9 +174,11 @@ export { SseTransport } from "./mcp/sse.js";
 export type { SseTransportOptions } from "./mcp/sse.js";
 export {
   DEFAULT_MAX_RESULT_CHARS,
+  DEFAULT_MAX_RESULT_TOKENS,
   bridgeMcpTools,
   flattenMcpResult,
   truncateForModel,
+  truncateForModelByTokens,
 } from "./mcp/registry.js";
 export type { BridgeOptions, BridgeResult, FlattenOptions } from "./mcp/registry.js";
 export { parseMcpSpec } from "./mcp/spec.js";

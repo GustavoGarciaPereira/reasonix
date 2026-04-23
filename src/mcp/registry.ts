@@ -7,6 +7,7 @@
  * MCP ecosystem tool, wrapped in Reasonix's Pillar 1 + Pillar 3 benefits.
  */
 
+import { countTokens } from "../tokenizer.js";
 import { ToolRegistry } from "../tools.js";
 import type { JSONSchema } from "../types.js";
 import type { McpClient } from "./client.js";
@@ -57,6 +58,18 @@ export interface BridgeOptions {
  * that most file reads and directory listings fit un-truncated.
  */
 export const DEFAULT_MAX_RESULT_CHARS = 32_000;
+
+/**
+ * Token-aware cap for tool results, in DeepSeek V3 tokens.
+ *
+ * 8,000 tokens ≈ 6% of DeepSeek V3's 131K context. One oversized tool
+ * result can't eat more than that no matter what character density the
+ * content has. The char cap (32K chars) only bounds tokens for English
+ * — CJK text at 1 char/token blows past 16K tokens under the same
+ * ceiling. With the tokenizer shipped in 0.5.0 we can cap the thing
+ * that actually matters.
+ */
+export const DEFAULT_MAX_RESULT_TOKENS = 8_000;
 
 export interface BridgeResult {
   registry: ToolRegistry;
@@ -157,6 +170,94 @@ export function truncateForModel(s: string, maxChars: number): string {
   const tail = s.slice(-tailBudget);
   const dropped = s.length - head.length - tail.length;
   return `${head}\n\n[…truncated ${dropped} chars — raise BridgeOptions.maxResultChars, or call the tool with a narrower scope (filter, head, pagination)…]\n\n${tail}`;
+}
+
+/**
+ * Token-aware truncation. Same head+tail policy as `truncateForModel`,
+ * but sizes the slices against a DeepSeek V3 token budget instead of a
+ * raw character count — so CJK text (which previously survived at 2×
+ * the token cost per char) gets capped at the same effective context
+ * footprint as English.
+ *
+ * Strategy: fast path when `s.length <= maxTokens` (every token is ≥1
+ * char, so this bounds tokens ≤ maxTokens — skip tokenize entirely).
+ * Short-ish strings are confirmed against the real token count.
+ * Long strings go straight to char-sliced head+tail with one or two
+ * tokenize-verify-and-shrink rounds per slice — we deliberately never
+ * tokenize the full input, because pathological repetitive text
+ * (megabytes of `AAAA…`) can cost 30s+ on the pure-TS BPE port.
+ */
+export function truncateForModelByTokens(s: string, maxTokens: number): string {
+  if (maxTokens <= 0) return "";
+  // Every token is ≥1 char — if length ≤ budget, tokens ≤ budget.
+  if (s.length <= maxTokens) return s;
+  // Small enough to tokenize-check without pathological cost: confirm
+  // whether we're actually over budget. (Threshold is the char-bound
+  // worst case for English/code — ~4 chars/token.)
+  if (s.length <= maxTokens * 4) {
+    const tokens = countTokens(s);
+    if (tokens <= maxTokens) return s;
+  }
+
+  const markerOverhead = 48; // rough token cost of the truncation marker
+  const contentBudget = Math.max(0, maxTokens - markerOverhead);
+  const tailBudget = Math.min(256, Math.floor(contentBudget * 0.1));
+  const headBudget = Math.max(0, contentBudget - tailBudget);
+
+  const head = sizePrefixToTokens(s, headBudget);
+  const tail = sizeSuffixToTokens(s, tailBudget);
+  const droppedChars = s.length - head.length - tail.length;
+  // Estimate dropped tokens from the per-slice char/token ratio we
+  // already measured, rather than paying another full-string tokenize.
+  // The marker says "~N tokens" so the ≤10% slop is visible to readers.
+  const headTokens = head ? countTokens(head) : 0;
+  const tailTokens = tail ? countTokens(tail) : 0;
+  const sampleChars = head.length + tail.length;
+  const sampleTokens = headTokens + tailTokens;
+  const ratio = sampleChars > 0 ? sampleTokens / sampleChars : 0.3;
+  const estTotalTokens = Math.ceil(s.length * ratio);
+  const droppedTokens = Math.max(0, estTotalTokens - sampleTokens);
+  return `${head}\n\n[…truncated ~${droppedTokens} tokens (${droppedChars} chars) — raise BridgeOptions.maxResultTokens, or call the tool with a narrower scope (filter, head, pagination)…]\n\n${tail}`;
+}
+
+/**
+ * Slice `s` from the start to the largest prefix that fits `budget`
+ * tokens. Never tokenizes the full input: starts with a char-bound
+ * estimate, then verifies and shrinks. Converges in 1–2 iterations.
+ */
+function sizePrefixToTokens(s: string, budget: number): string {
+  if (budget <= 0 || s.length === 0) return "";
+  // Optimistic starting size: assume ~4 chars/token (English/code
+  // average). If the content is denser (CJK ~1 char/token), the first
+  // tokenize will show we're over and we shrink.
+  let size = Math.min(s.length, budget * 4);
+  for (let iter = 0; iter < 6; iter++) {
+    if (size <= 0) return "";
+    const slice = s.slice(0, size);
+    const count = countTokens(slice);
+    if (count <= budget) return slice;
+    // Shrink by the overshoot fraction plus a small safety margin.
+    const next = Math.floor(size * (budget / count) * 0.95);
+    if (next >= size) return s.slice(0, Math.max(0, size - 1));
+    size = next;
+  }
+  return s.slice(0, Math.max(0, size));
+}
+
+/** Slice `s` from the end to the largest suffix that fits `budget` tokens. */
+function sizeSuffixToTokens(s: string, budget: number): string {
+  if (budget <= 0 || s.length === 0) return "";
+  let size = Math.min(s.length, budget * 4);
+  for (let iter = 0; iter < 6; iter++) {
+    if (size <= 0) return "";
+    const slice = s.slice(-size);
+    const count = countTokens(slice);
+    if (count <= budget) return slice;
+    const next = Math.floor(size * (budget / count) * 0.95);
+    if (next >= size) return s.slice(-Math.max(0, size - 1));
+    size = next;
+  }
+  return s.slice(-Math.max(0, size));
 }
 
 function blockToString(block: McpContentBlock): string {

@@ -551,9 +551,13 @@ describe("CacheFirstLoop (non-streaming)", () => {
 
   it("pre-clips new tool results at dispatch so they never enter the log oversized", async () => {
     const reg = new ToolRegistry();
-    // Tool returns ~50k chars; DEFAULT_MAX_RESULT_CHARS is 32k, so the
-    // log entry must be smaller than the raw return value.
-    const huge = "A".repeat(50_000);
+    // Tool returns ~50k chars of realistic-shape log text; the default
+    // token budget (8k) bounds the resulting log entry to a small
+    // fraction of the raw size. (Using "A".repeat(N) would hit the
+    // tokenizer's BPE O(n²) path for repeated single-char inputs —
+    // pathological enough to slow the suite by tens of seconds, and
+    // not representative of real tool output.)
+    const huge = "ERROR: repeated failure with some detail\n".repeat(1250);
     reg.register({
       name: "big",
       description: "returns a lot",

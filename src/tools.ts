@@ -1,4 +1,4 @@
-import { truncateForModel } from "./mcp/registry.js";
+import { truncateForModel, truncateForModelByTokens } from "./mcp/registry.js";
 import { analyzeSchema, flattenSchema, nestArguments } from "./repair/flatten.js";
 import type { JSONSchema, ToolSpec } from "./types.js";
 
@@ -129,7 +129,7 @@ export class ToolRegistry {
   async dispatch(
     name: string,
     argumentsRaw: string | Record<string, unknown>,
-    opts: { signal?: AbortSignal; maxResultChars?: number } = {},
+    opts: { signal?: AbortSignal; maxResultChars?: number; maxResultTokens?: number } = {},
   ): Promise<string> {
     const tool = this._tools.get(name);
     if (!tool) {
@@ -174,7 +174,19 @@ export class ToolRegistry {
       // log (and disk session file) on its way in. Healing at load time
       // still catches pre-existing oversize entries; this closes the
       // door on new ones.
-      return opts.maxResultChars ? truncateForModel(str, opts.maxResultChars) : str;
+      //
+      // Two caps available: `maxResultTokens` (preferred — bounds the
+      // real context footprint, so CJK doesn't slip past at 2× density)
+      // and `maxResultChars` (legacy). If both are set, apply both and
+      // the tighter one wins; char-only callers keep their old behavior.
+      let clipped = str;
+      if (opts.maxResultTokens !== undefined) {
+        clipped = truncateForModelByTokens(clipped, opts.maxResultTokens);
+      }
+      if (opts.maxResultChars !== undefined) {
+        clipped = truncateForModel(clipped, opts.maxResultChars);
+      }
+      return clipped;
     } catch (err) {
       const e = err as Error & { toToolResult?: () => unknown };
       // Errors may opt into a richer tool-result shape by implementing
