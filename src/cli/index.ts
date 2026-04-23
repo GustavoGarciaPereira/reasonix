@@ -179,9 +179,12 @@ program
   });
 
 program
-  .command("stats <transcript>")
-  .description("Summarize a JSONL transcript produced by `reasonix chat --transcript`.")
-  .action((transcript: string) => {
+  .command("stats [transcript]")
+  .description(
+    "Show usage dashboard (today / week / month / all-time · turns · cache hit · cost · savings vs Claude). " +
+      "Pass a transcript path to fall back to the per-file summary (assistant turns + tool calls).",
+  )
+  .action((transcript: string | undefined) => {
     statsCommand({ transcript });
   });
 

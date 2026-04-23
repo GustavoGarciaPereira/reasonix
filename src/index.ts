@@ -266,6 +266,22 @@ export {
   projectSettingsPath,
   runHooks,
 } from "./hooks.js";
+export {
+  aggregateUsage,
+  appendUsage,
+  bucketCacheHitRatio,
+  bucketSavingsFraction,
+  defaultUsageLogPath,
+  formatLogSize,
+  readUsageLog,
+} from "./usage.js";
+export type {
+  AggregateOptions,
+  AppendUsageInput,
+  UsageAggregate,
+  UsageBucket,
+  UsageRecord,
+} from "./usage.js";
 export type {
   HookConfig,
   HookEvent,

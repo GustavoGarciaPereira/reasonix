@@ -12,8 +12,10 @@ import { PROJECT_MEMORY_FILE, memoryEnabled, readProjectMemory } from "../../pro
 import { deleteSession, listSessions } from "../../session.js";
 import { SkillStore } from "../../skills.js";
 import { DEEPSEEK_CONTEXT_TOKENS, DEFAULT_CONTEXT_TOKENS } from "../../telemetry.js";
+import { aggregateUsage, defaultUsageLogPath, readUsageLog } from "../../usage.js";
 import { type MemoryScope, MemoryStore } from "../../user-memory.js";
 import { VERSION, compareVersions, isNpxInstall } from "../../version.js";
+import { renderDashboard } from "../commands/stats.js";
 
 export interface SlashResult {
   /** Text to display back to the user as a system/info line. */
@@ -202,6 +204,11 @@ export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
   {
     cmd: "update",
     summary: "show current vs latest version + the shell command to upgrade",
+  },
+  {
+    cmd: "stats",
+    summary:
+      "cross-session cost dashboard (today / week / month / all-time · cache hit · vs Claude)",
   },
   { cmd: "think", summary: "dump the last turn's full R1 reasoning (reasoner only)" },
   { cmd: "retry", summary: "truncate & resend your last message (fresh sample)" },
@@ -415,6 +422,10 @@ export function handleSlash(
 
     case "update": {
       return handleUpdateSlash(ctx);
+    }
+
+    case "stats": {
+      return handleStatsSlash();
     }
 
     case "think":
@@ -718,6 +729,35 @@ export function handleSlash(
  * as pending/offline — still a useful output (current version + how
  * to force a fresh check from another terminal).
  */
+/**
+ * `/stats` — dashboard view of `~/.reasonix/usage.jsonl`, the same
+ * roll-up `reasonix stats` (no arg) prints at the shell. Synchronous
+ * disk read; cheap enough that we don't bother caching between slash
+ * invocations.
+ *
+ * No transcript-path variant in-TUI: the per-file summary is scripty
+ * and rarely wanted mid-session. If someone needs it they have the
+ * CLI form (`reasonix stats <path>`).
+ */
+function handleStatsSlash(): SlashResult {
+  const path = defaultUsageLogPath();
+  const records = readUsageLog(path);
+  if (records.length === 0) {
+    return {
+      info: [
+        "no usage data yet.",
+        "",
+        `  ${path}`,
+        "",
+        "every turn you run here appends one record — this session's turns",
+        "will show up in the dashboard once you send a message.",
+      ].join("\n"),
+    };
+  }
+  const agg = aggregateUsage(records);
+  return { info: renderDashboard(agg, path) };
+}
+
 function handleUpdateSlash(ctx: SlashContext): SlashResult {
   const latest = ctx.latestVersion ?? null;
   const lines: string[] = [`current: reasonix ${VERSION}`];

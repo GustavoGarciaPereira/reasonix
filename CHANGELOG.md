@@ -3,6 +3,72 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.24] — 2026-04-22
+
+**Headline:** `reasonix stats` is now a cross-session cost dashboard.
+
+Every turn `reasonix chat|code|run` executes now appends one line to
+`~/.reasonix/usage.jsonl` carrying tokens + cost + the equivalent
+Claude Sonnet 4.6 cost. `reasonix stats` (no arg) rolls that log up
+into today / week / month / all-time windows:
+
+```
+Reasonix usage — /Users/you/.reasonix/usage.jsonl (2.3 KB)
+
+            turns  cache hit    cost (USD)      vs Claude     saved
+----------------------------------------------------------------------
+today           8      95.1%     $0.004821        $0.1348      96.4%
+week           34      93.8%     $0.023104        $0.6081      96.2%
+month         127      94.2%     $0.081530        $2.1452      96.2%
+all-time      342      94.0%     $0.210881        $5.8934      96.4%
+
+most used model:   deepseek-reasoner (84% of turns)
+top session:       default (214 turns)
+tracked since:     2026-04-20
+```
+
+Pillar 1's pitch (94–97% cost reduction vs Claude) turns from a
+blog number into a fact users can check on their own machine. The
+savings column is derived per turn (not synthesized) from the
+existing `claudeEquivalentCost()` helper in `src/telemetry.ts`.
+
+Back-compat: `reasonix stats <transcript>` still works — passing a
+path falls back to the old per-file summary (assistant turns + tool
+calls). No arg → dashboard.
+
+Privacy: the log contains tokens + costs + the user-chosen session
+name, nothing else. No prompts, no completions, no tool args.
+
+### Added
+
+- **`/stats` slash** — same dashboard, in-session. Reads
+  `~/.reasonix/usage.jsonl` and renders via the shared
+  `renderDashboard` pure function, so the shell command and the
+  slash stay in sync by construction.
+- **`src/usage.ts`** — `appendUsage` (best-effort JSONL write,
+  swallows disk failures so a read-only `~/` never breaks the
+  turn), `readUsageLog` (malformed-line tolerant), `aggregateUsage`
+  (rolling windows: 24h / 7d / 30d / all, plus model + session
+  histograms), `bucketCacheHitRatio`, `bucketSavingsFraction`,
+  `formatLogSize`.
+- **Wire-up** in `src/cli/ui/App.tsx` (assistant_final event) and
+  `src/cli/commands/run.ts` (CI / scripting turns land in the same
+  log as TUI turns).
+- **Upgraded `reasonix stats`**. No-arg → dashboard; transcript arg
+  → legacy per-file summary. `renderDashboard(agg, path)` is an
+  exported pure function so tests can assert the string output.
+
+### Tests (+15, suite 708 → 723)
+
+- `tests/usage.test.ts` covers: appendUsage round-trip, empty
+  log / malformed-line tolerance / parent-dir auto-creation / silent
+  write-failure (points path at a regular file), aggregateUsage
+  (empty, rolling-window bucketing, cross-record sums, byModel +
+  bySession sort + (ephemeral) grouping), bucket helpers with zero
+  denominators, renderDashboard (row labels + em-dash fallback).
+
+---
+
 ## [0.4.23] — 2026-04-22
 
 **Headline:** Hooks — user-defined automation that fires at four

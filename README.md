@@ -148,6 +148,29 @@ reasonix code › /commit "fix: findByEmail case-insensitive"
   writable).
 - `npx reasonix code --no-session` — ephemeral; nothing saved.
 
+### `reasonix stats` — how much did you actually save?
+
+Every turn `reasonix chat|code|run` runs appends a compact record
+(tokens + cost + what Claude Sonnet 4.6 would have charged) to
+`~/.reasonix/usage.jsonl`. `reasonix stats` with no args rolls that
+log into today / week / month / all-time windows:
+
+```
+Reasonix usage — /Users/you/.reasonix/usage.jsonl
+
+            turns  cache hit    cost (USD)      vs Claude     saved
+----------------------------------------------------------------------
+today           8      95.1%     $0.004821        $0.1348      96.4%
+week           34      93.8%     $0.023104        $0.6081      96.2%
+month         127      94.2%     $0.081530        $2.1452      96.2%
+all-time      342      94.0%     $0.210881        $5.8934      96.4%
+```
+
+Privacy: only tokens, costs, and the session name you chose land
+in the file. No prompts, no completions, no tool arguments.
+`reasonix stats <transcript>` keeps the old per-file summary
+(assistant turns + tool calls) for scripts that already use it.
+
 ### Staying current
 
 The panel header shows the running version next to `Reasonix` (e.g.

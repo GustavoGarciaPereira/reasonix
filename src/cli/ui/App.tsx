@@ -18,6 +18,7 @@ import type { SessionSummary } from "../../telemetry.js";
 import type { ToolRegistry } from "../../tools.js";
 import { formatCommandResult, runCommand } from "../../tools/shell.js";
 import { openTranscriptFile, recordFromLoopEvent, writeRecord } from "../../transcript.js";
+import { appendUsage } from "../../usage.js";
 import { VERSION, compareVersions, getLatestVersion } from "../../version.js";
 import { type DisplayEvent, EventRow } from "./EventLog.js";
 import { PlanConfirm, type PlanConfirmChoice } from "./PlanConfirm.js";
@@ -768,6 +769,17 @@ export function App({
             // until the whole step resolves, which is especially
             // confusing in multi-iter tool-call chains.
             setSummary(loop.stats.summary());
+            // Persist a compact per-turn record to ~/.reasonix/usage.jsonl
+            // so `reasonix stats` (no arg) can aggregate across every
+            // session the user has ever run. Best-effort: a disk error
+            // inside appendUsage is swallowed and won't break the turn.
+            if (ev.stats?.usage) {
+              appendUsage({
+                session: session ?? null,
+                model: ev.stats.model,
+                usage: ev.stats.usage,
+              });
+            }
             const finalText = ev.content || streamRef.text;
             const iterReasoning = streamRef.reasoning || undefined;
             const iterId = `${assistantId}-i${assistantIterCounter.current++}`;
@@ -950,6 +962,7 @@ export function App({
       mcpSpecs,
       mcpServers,
       planMode,
+      session,
       slashSelected,
       togglePlanMode,
       writeTranscript,

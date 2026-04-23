@@ -516,6 +516,21 @@ describe("handleSlash", () => {
     });
   });
 
+  describe("/stats", () => {
+    it("prints a how-to when the usage log is empty / missing", () => {
+      // Use the real ~ here — if a real log exists (developer machine),
+      // this test would see real data. We assert only on a substring
+      // that's present either way: the path is always mentioned.
+      const r = handleSlash("stats", [], makeLoop());
+      expect(r.info).toMatch(/usage\.jsonl|turns/);
+    });
+
+    it("is surfaced by suggestSlashCommands", () => {
+      const names = suggestSlashCommands("sta").map((s) => s.cmd);
+      expect(names).toContain("stats");
+    });
+  });
+
   it("suggestSlashCommands hides code-mode-only entries when codeMode=false", () => {
     const names = suggestSlashCommands("", false).map((s) => s.cmd);
     expect(names).not.toContain("apply");

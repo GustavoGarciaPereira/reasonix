@@ -11,6 +11,7 @@ import { SseTransport } from "../../mcp/sse.js";
 import { type McpTransport, StdioTransport } from "../../mcp/stdio.js";
 import { ToolRegistry } from "../../tools.js";
 import { openTranscriptFile, recordFromLoopEvent, writeRecord } from "../../transcript.js";
+import { appendUsage } from "../../usage.js";
 
 export interface RunOptions {
   task: string;
@@ -148,6 +149,12 @@ export async function runCommand(opts: RunOptions): Promise<void> {
       if (ev.role === "tool") process.stdout.write(`\n[tool ${ev.toolName}] ${ev.content}\n`);
       if (ev.role === "error") process.stderr.write(`\n[error] ${ev.error}\n`);
       if (ev.role === "done") process.stdout.write("\n");
+      if (ev.role === "assistant_final" && ev.stats?.usage) {
+        // `reasonix run` is often used in CI / scripting — we want
+        // those turns to show up in `reasonix stats` too so the
+        // dashboard reflects all DeepSeek spend, not just TUI sessions.
+        appendUsage({ session: null, model: ev.stats.model, usage: ev.stats.usage });
+      }
       // Persist every non-streaming event — deltas would flood the file and
       // aren't useful for replay (replay renders final content, not keystrokes).
       if (transcriptStream && ev.role !== "assistant_delta") {
