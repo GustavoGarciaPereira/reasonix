@@ -22,6 +22,7 @@ import { basename, resolve } from "node:path";
 import { loadProjectShellAllowed } from "../../config.js";
 import { sanitizeName } from "../../session.js";
 import { ToolRegistry } from "../../tools.js";
+import { registerChoiceTool } from "../../tools/choice.js";
 import { registerFilesystemTools } from "../../tools/filesystem.js";
 import { JobRegistry } from "../../tools/jobs.js";
 import { registerMemoryTools } from "../../tools/memory.js";
@@ -87,6 +88,12 @@ export async function codeCommand(opts: CodeOptions = {}): Promise<void> {
   // no-op outside plan mode and throws `PlanProposedError` when the
   // user has `/plan`-enabled the session.
   registerPlanTool(tools);
+  // `ask_choice` — branching primitive. Independent of plan mode: the
+  // model uses it to put a 2–4 way choice in front of the user
+  // (strategy, style, library pick) without trying to squeeze the
+  // menu into a submit_plan body. Keeping it always-registered
+  // preserves the prefix cache across plan-mode toggles.
+  registerChoiceTool(tools);
   // `remember` / `forget` / `recall_memory` — cross-session user memory.
   // Project scope hashes off rootDir so switching projects gets a fresh
   // per-project memory store; the global scope is shared across runs.

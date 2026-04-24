@@ -27,6 +27,7 @@ import { CacheFirstLoop, DeepSeekClient, ImmutablePrefix } from "../../index.js"
 import type { LoopEvent } from "../../loop.js";
 import type { SessionSummary } from "../../telemetry.js";
 import type { ToolRegistry } from "../../tools.js";
+import type { ChoiceOption } from "../../tools/choice.js";
 import type { PlanStep, StepCompletion } from "../../tools/plan.js";
 import { formatCommandResult, runCommand } from "../../tools/shell.js";
 import { registerSkillTools } from "../../tools/skills.js";
@@ -34,6 +35,7 @@ import { formatSubagentResult, spawnSubagent } from "../../tools/subagent.js";
 import { openTranscriptFile, recordFromLoopEvent, writeRecord } from "../../transcript.js";
 import { appendUsage } from "../../usage.js";
 import { AtMentionSuggestions } from "./AtMentionSuggestions.js";
+import { ChoiceConfirm, type ChoiceConfirmChoice } from "./ChoiceConfirm.js";
 import { EditConfirm, type EditReviewChoice } from "./EditConfirm.js";
 import { type DisplayEvent, EventRow } from "./EventLog.js";
 import { ModeStatusBar, OngoingToolRow, StatusRow, SubagentRow, UndoBanner } from "./LiveRows.js";
@@ -299,6 +301,26 @@ export function App({
     title?: string;
     completed: number;
     total: number;
+  } | null>(null);
+  // Branching question from `ask_choice`. Non-null mounts ChoiceConfirm;
+  // user picks an option (synthetic "user picked <id>"), types a
+  // custom answer (synthetic "user answered: <text>"), or cancels.
+  // Kept separate from pendingPlan / pendingCheckpoint because a
+  // branch question is orthogonal to plan state — it can fire in
+  // chat mode or mid-plan when the model genuinely needs a decision.
+  const [pendingChoice, setPendingChoice] = useState<{
+    question: string;
+    options: ChoiceOption[];
+    allowCustom: boolean;
+  } | null>(null);
+  // Staged entry for the "Let me type my own answer" path. Same
+  // two-step pattern as stagedInput for plan approvals — user picks
+  // "custom", we stash the question context, show a free-form input,
+  // and Esc restores the picker.
+  const [stagedChoiceCustom, setStagedChoiceCustom] = useState<{
+    question: string;
+    options: ChoiceOption[];
+    allowCustom: boolean;
   } | null>(null);
   // Plan-mode indicator — displayed in the StatsPanel, mirrored onto
   // the ToolRegistry so dispatch enforces read-only. Toggled via the
@@ -614,7 +636,9 @@ export function App({
       !stagedInput &&
       !pendingEditReview &&
       !pendingCheckpoint &&
-      !stagedCheckpointRevise
+      !stagedCheckpointRevise &&
+      !pendingChoice &&
+      !stagedChoiceCustom
     ) {
       setEditMode((m) => {
         const next: EditMode = m === "auto" ? "review" : "auto";
@@ -647,6 +671,8 @@ export function App({
       !pendingEditReview &&
       !pendingCheckpoint &&
       !stagedCheckpointRevise &&
+      !pendingChoice &&
+      !stagedChoiceCustom &&
       // Fire when EITHER the banner is up OR there's any non-undone
       // history entry — the keybind is useful long after the 5-second
       // banner expires, which users rightly want.
@@ -1560,6 +1586,40 @@ export function App({
                 /* malformed payload — skip the picker */
               }
             }
+            // ask_choice fires with ChoiceRequestedError. We parse the
+            // structured payload, mount ChoiceConfirm, and let the
+            // user drive the next step. Same toToolResult protocol as
+            // PlanProposedError / PlanCheckpointError — just a
+            // different error tag and payload shape.
+            if (ev.toolName === "ask_choice" && ev.content.includes('"ChoiceRequestedError:')) {
+              try {
+                const parsed = JSON.parse(ev.content) as {
+                  question?: unknown;
+                  options?: unknown;
+                  allowCustom?: unknown;
+                };
+                const question = typeof parsed.question === "string" ? parsed.question.trim() : "";
+                const options = Array.isArray(parsed.options)
+                  ? (parsed.options as ChoiceOption[]).filter(
+                      (o) =>
+                        o &&
+                        typeof o.id === "string" &&
+                        o.id.trim() &&
+                        typeof o.title === "string" &&
+                        o.title.trim(),
+                    )
+                  : [];
+                if (question && options.length >= 2) {
+                  setPendingChoice({
+                    question,
+                    options,
+                    allowCustom: parsed.allowCustom === true,
+                  });
+                }
+              } catch {
+                /* malformed payload — skip the picker */
+              }
+            }
             // mark_step_complete fires during plan execution and throws
             // PlanCheckpointError so the loop pauses. The registry
             // serialized `{error, kind, stepId, title?, result, notes?}`
@@ -2058,6 +2118,95 @@ export function App({
     if (snap) setPendingCheckpoint(snap);
   }, [stagedCheckpointRevise]);
 
+  /**
+   * ChoiceConfirm callback. Pick fires a synthetic "user picked <id>"
+   * and lets the model continue down that branch. Custom defers to a
+   * free-form input. Cancel drops the question entirely.
+   */
+  const handleChoiceConfirm = useCallback(
+    async (choice: ChoiceConfirmChoice) => {
+      const snap = pendingChoice;
+      if (!snap) return;
+      setPendingChoice(null);
+      if (choice.kind === "custom") {
+        setStagedChoiceCustom(snap);
+        return;
+      }
+      if (choice.kind === "cancel") {
+        const synthetic =
+          "The user cancelled the choice. Don't act on any of the options you presented. Ask what they actually want before doing anything else.";
+        setHistorical((prev) => [
+          ...prev,
+          { id: `choice-cancel-${Date.now()}`, role: "info", text: "▸ choice cancelled" },
+        ]);
+        if (busy) {
+          loop.abort();
+          setQueuedSubmit(synthetic);
+        } else {
+          await handleSubmit(synthetic);
+        }
+        return;
+      }
+      const picked = snap.options.find((o) => o.id === choice.optionId);
+      const label = picked ? `${picked.id} · ${picked.title}` : choice.optionId;
+      const synthetic = `The user picked option ${choice.optionId}${picked ? ` ("${picked.title}")` : ""}. Proceed with that branch. Do not re-ask the same question.`;
+      setHistorical((prev) => [
+        ...prev,
+        { id: `choice-pick-${Date.now()}`, role: "info", text: `▸ chose ${label}` },
+      ]);
+      if (busy) {
+        loop.abort();
+        setQueuedSubmit(synthetic);
+      } else {
+        await handleSubmit(synthetic);
+      }
+    },
+    [pendingChoice, busy, loop, handleSubmit],
+  );
+
+  // Ref-wrap to keep ChoiceConfirm's React.memo from re-rendering on
+  // every parent tick (same pattern as PlanConfirm / CheckpointConfirm).
+  const handleChoiceConfirmRef = useRef(handleChoiceConfirm);
+  useEffect(() => {
+    handleChoiceConfirmRef.current = handleChoiceConfirm;
+  }, [handleChoiceConfirm]);
+  const stableHandleChoiceConfirm = useCallback(
+    async (choice: ChoiceConfirmChoice) => handleChoiceConfirmRef.current(choice),
+    [],
+  );
+
+  /** Custom free-form answer submitted — ship it as a synthetic message. */
+  const handleChoiceCustomSubmit = useCallback(
+    async (answer: string) => {
+      setStagedChoiceCustom(null);
+      const trimmed = answer.trim();
+      const synthetic = trimmed
+        ? `The user answered with a custom reply (none of the pre-defined options fit):\n\n${trimmed}\n\nRead it carefully and proceed — don't snap back to the options you listed unless the user's reply clearly maps to one.`
+        : "The user pressed Enter without typing anything. Ask what they actually want.";
+      const marker = trimmed
+        ? `▸ custom answer — ${trimmed.length > 50 ? `${trimmed.slice(0, 50)}…` : trimmed}`
+        : "▸ custom answer — (blank)";
+      setHistorical((prev) => [
+        ...prev,
+        { id: `choice-custom-${Date.now()}`, role: "info", text: marker },
+      ]);
+      if (busy) {
+        loop.abort();
+        setQueuedSubmit(synthetic);
+      } else {
+        await handleSubmit(synthetic);
+      }
+    },
+    [busy, loop, handleSubmit],
+  );
+
+  /** Esc on the custom input — restore the choice picker. */
+  const handleChoiceCustomCancel = useCallback(() => {
+    const snap = stagedChoiceCustom;
+    setStagedChoiceCustom(null);
+    if (snap) setPendingChoice(snap);
+  }, [stagedChoiceCustom]);
+
   return (
     <TickerProvider
       disabled={
@@ -2066,7 +2215,9 @@ export function App({
         !!pendingShell ||
         !!pendingEditReview ||
         !!pendingCheckpoint ||
-        !!stagedCheckpointRevise
+        !!stagedCheckpointRevise ||
+        !!pendingChoice ||
+        !!stagedChoiceCustom
       }
     >
       <Box flexDirection="column">
@@ -2145,7 +2296,9 @@ export function App({
         !stagedInput &&
         !pendingEditReview &&
         !pendingCheckpoint &&
-        !stagedCheckpointRevise ? (
+        !stagedCheckpointRevise &&
+        !pendingChoice &&
+        !stagedChoiceCustom ? (
           <UndoBanner banner={undoBanner} />
         ) : null}
         {/*
@@ -2180,6 +2333,19 @@ export function App({
             mode="checkpoint-revise"
             onSubmit={handleCheckpointReviseSubmit}
             onCancel={handleCheckpointReviseCancel}
+          />
+        ) : stagedChoiceCustom ? (
+          <PlanRefineInput
+            mode="choice-custom"
+            onSubmit={handleChoiceCustomSubmit}
+            onCancel={handleChoiceCustomCancel}
+          />
+        ) : pendingChoice ? (
+          <ChoiceConfirm
+            question={pendingChoice.question}
+            options={pendingChoice.options}
+            allowCustom={pendingChoice.allowCustom}
+            onChoose={stableHandleChoiceConfirm}
           />
         ) : pendingCheckpoint ? (
           <PlanCheckpointConfirm

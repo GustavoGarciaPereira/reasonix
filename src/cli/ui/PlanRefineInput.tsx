@@ -19,13 +19,15 @@ import React, { useState } from "react";
 
 export interface PlanRefineInputProps {
   /**
-   * Which path the user is on. Approve = "implement with these last
+   * Which path the user is on. approve = "implement with these last
    * instructions"; refine = "revise the plan with this feedback";
    * checkpoint-revise = mid-execution pause, user is tweaking the
-   * remaining plan after seeing a step's result. Drives the header +
-   * hint text so users know what kind of message they're writing.
+   * remaining plan after seeing a step's result; choice-custom = user
+   * typed an off-list answer to an ask_choice branch. Drives the
+   * header + hint text so users know what kind of message they're
+   * writing.
    */
-  mode: "approve" | "refine" | "checkpoint-revise";
+  mode: "approve" | "refine" | "checkpoint-revise" | "choice-custom";
   /** Called with trimmed feedback. Empty string is allowed. */
   onSubmit: (feedback: string) => void;
   /** Called when the user presses Esc to return to the picker. */
@@ -59,19 +61,25 @@ export function PlanRefineInput({ mode, onSubmit, onCancel }: PlanRefineInputPro
       ? "▸ approving — any last instructions or answers to open questions?"
       : mode === "checkpoint-revise"
         ? "▸ revising — what should change before the next step?"
-        : "▸ refining — what should the model change?";
+        : mode === "choice-custom"
+          ? "▸ custom answer — type whatever fits"
+          : "▸ refining — what should the model change?";
   const hint =
     mode === "approve"
       ? "Answer questions the plan raised, add constraints, or just press Enter to approve as-is."
       : mode === "checkpoint-revise"
         ? "Scope change, skip steps, alternative approach — the model will adjust the remaining plan based on this."
-        : "Describe what's wrong or missing, or answer questions the plan raised.";
+        : mode === "choice-custom"
+          ? "Free-form reply. The model reads it verbatim and proceeds — no need to match the listed options."
+          : "Describe what's wrong or missing, or answer questions the plan raised.";
   const blankHint =
     mode === "approve"
       ? " (Enter with blank = approve without extra instructions.)"
       : mode === "checkpoint-revise"
         ? " (Enter with blank = continue with the current plan.)"
-        : " (Enter with blank = ask the model to list concrete questions.)";
+        : mode === "choice-custom"
+          ? " (Enter with blank = ask the model what you actually want.)"
+          : " (Enter with blank = ask the model to list concrete questions.)";
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1} marginY={1}>

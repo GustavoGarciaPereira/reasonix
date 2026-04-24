@@ -15,6 +15,7 @@ import {
   sessionPath as sessionPathOf,
 } from "../../session.js";
 import { ToolRegistry } from "../../tools.js";
+import { registerChoiceTool } from "../../tools/choice.js";
 import { registerMemoryTools } from "../../tools/memory.js";
 import { registerWebTools } from "../../tools/web.js";
 import { App } from "../ui/App.js";
@@ -255,6 +256,10 @@ export async function chatCommand(opts: ChatOptions): Promise<void> {
   if (!opts.seedTools) {
     if (!tools) tools = new ToolRegistry();
     registerMemoryTools(tools, {});
+    // `ask_choice` — branching primitive, useful in chat too (stylistic
+    // preferences, doc language, library picks). Independent of plan
+    // mode, which chat doesn't have anyway.
+    registerChoiceTool(tools);
   }
 
   // Decide whether to show the session picker. It's gated on: session
