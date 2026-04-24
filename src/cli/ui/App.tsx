@@ -41,6 +41,7 @@ import { PromptInput } from "./PromptInput.js";
 import { ShellConfirm, type ShellConfirmChoice, derivePrefix } from "./ShellConfirm.js";
 import { SlashSuggestions } from "./SlashSuggestions.js";
 import { StatsPanel } from "./StatsPanel.js";
+import { detectBangCommand, formatBangUserMessage } from "./bang.js";
 import { type McpServerSummary, handleSlash, parseSlash, suggestSlashCommands } from "./slash.js";
 import { TickerProvider, useElapsedSeconds, useTick } from "./ticker.js";
 
@@ -778,6 +779,63 @@ export function App({
         const out = text === "y" ? codeApply() : codeDiscard();
         setHistorical((prev) => [...prev, { id: `sys-${Date.now()}`, role: "info", text: out }]);
         promptHistory.current.push(text);
+        return;
+      }
+
+      // Bash mode — `!cmd` runs a shell command in the sandbox root
+      // immediately (no allowlist gate: user-typed = explicit consent),
+      // surfaces the formatted output in the Historical log, and
+      // appends a user-role message to the loop's in-memory log so the
+      // next model turn sees what happened. Claude-Code-style `!` UX.
+      //
+      // Session-file durability is intentionally NOT wired here:
+      // `loop.log.append` updates memory only, so on resume the bang
+      // output is gone. The next actual step()'s appendAndPersist
+      // captures the next user turn, and the model sees this bang
+      // output live within the same session either way. Treating bang
+      // as ephemeral keeps the fast-path fast; durable-capture could
+      // land in a later release.
+      const bangCmd = detectBangCommand(text);
+      if (bangCmd !== null) {
+        const bangRoot = codeMode?.rootDir ?? process.cwd();
+        promptHistory.current.push(text);
+        setHistorical((prev) => [
+          ...prev,
+          {
+            id: `bang-u-${Date.now()}`,
+            role: "user",
+            text,
+            leadSeparator: prev.length > 0,
+          },
+        ]);
+        setBusy(true);
+        try {
+          const result = await runCommand(bangCmd, {
+            cwd: bangRoot,
+            timeoutSec: 60,
+            maxOutputChars: 32_000,
+          });
+          const formatted = formatCommandResult(bangCmd, result);
+          setHistorical((prev) => [
+            ...prev,
+            { id: `bang-o-${Date.now()}`, role: "info", text: formatted },
+          ]);
+          loop.log.append({
+            role: "user",
+            content: formatBangUserMessage(bangCmd, formatted),
+          });
+        } catch (err) {
+          setHistorical((prev) => [
+            ...prev,
+            {
+              id: `bang-e-${Date.now()}`,
+              role: "warning",
+              text: `! command failed: ${(err as Error).message}`,
+            },
+          ]);
+        } finally {
+          setBusy(false);
+        }
         return;
       }
 
