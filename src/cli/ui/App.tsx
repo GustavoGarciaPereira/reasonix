@@ -42,6 +42,7 @@ import { ShellConfirm, type ShellConfirmChoice, derivePrefix } from "./ShellConf
 import { SlashSuggestions } from "./SlashSuggestions.js";
 import { StatsPanel } from "./StatsPanel.js";
 import { detectBangCommand, formatBangUserMessage } from "./bang.js";
+import { formatLongPaste } from "./paste-collapse.js";
 import { type McpServerSummary, handleSlash, parseSlash, suggestSlashCommands } from "./slash.js";
 import { TickerProvider, useElapsedSeconds, useTick } from "./ticker.js";
 
@@ -945,14 +946,23 @@ export function App({
       }
 
       // User message is immutable — push to Static immediately.
+      // Large pastes (stack traces, log dumps, file contents) get a
+      // collapsed preview in Historical so scrollback stays navigable;
+      // the MODEL still receives the full text below via modelInput.
       promptHistory.current.push(text);
+      const pasteDisplay = formatLongPaste(text);
       setHistorical((prev) => [
         ...prev,
         // `leadSeparator`: thin rule above this user turn when history
         // isn't empty — visual pacing for multi-turn sessions. First
         // user message leaves it off so the UI doesn't open with a
         // dangling divider.
-        { id: `u-${Date.now()}`, role: "user", text, leadSeparator: prev.length > 0 },
+        {
+          id: `u-${Date.now()}`,
+          role: "user",
+          text: pasteDisplay.displayText,
+          leadSeparator: prev.length > 0,
+        },
       ]);
 
       const assistantId = `a-${Date.now()}`;
