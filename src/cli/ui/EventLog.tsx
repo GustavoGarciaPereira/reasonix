@@ -7,7 +7,21 @@ import { PlanStateBlock } from "./PlanStateBlock.js";
 import { Markdown } from "./markdown.js";
 import { useElapsedSeconds, useTick } from "./ticker.js";
 
-export type DisplayRole = "user" | "assistant" | "tool" | "system" | "error" | "info" | "warning";
+export type DisplayRole =
+  | "user"
+  | "assistant"
+  | "tool"
+  | "system"
+  | "error"
+  | "info"
+  | "warning"
+  /**
+   * A plan body pushed to scrollback when the model calls `submit_plan`.
+   * Rendered through the full markdown pipeline (not truncated), so the
+   * user reads the whole thing in the permanent Static log and the
+   * PlanConfirm modal below it stays a tight picker.
+   */
+  | "plan";
 
 export interface DisplayEvent {
   id: string;
@@ -156,6 +170,20 @@ export const EventRow = React.memo(function EventRow({
     return (
       <Box>
         <Text dimColor>{event.text}</Text>
+      </Box>
+    );
+  }
+  if (event.role === "plan") {
+    return (
+      <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginY={1}>
+        <Box>
+          <Text bold color="cyan">
+            {"📋 plan proposed — pick a choice below"}
+          </Text>
+        </Box>
+        <Box marginTop={1} flexDirection="column">
+          <Markdown text={event.text} projectRoot={projectRoot} />
+        </Box>
       </Box>
     );
   }

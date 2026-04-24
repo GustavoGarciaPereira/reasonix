@@ -1497,7 +1497,21 @@ export function App({
               try {
                 const parsed = JSON.parse(ev.content) as { plan?: unknown };
                 if (typeof parsed.plan === "string" && parsed.plan.trim()) {
-                  setPendingPlan(parsed.plan.trim());
+                  const planText = parsed.plan.trim();
+                  setPendingPlan(planText);
+                  // Push the plan into the Static scrollback so the
+                  // user can read it in full (and scroll back through
+                  // the terminal's own buffer), rather than being
+                  // constrained by the PlanConfirm modal's height cap.
+                  // The modal below then stays a small picker.
+                  setHistorical((prev) => [
+                    ...prev,
+                    {
+                      id: `plan-${Date.now()}-${Math.random()}`,
+                      role: "plan",
+                      text: planText,
+                    },
+                  ]);
                 }
               } catch {
                 /* malformed payload — skip the picker */
