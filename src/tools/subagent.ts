@@ -109,7 +109,7 @@ export interface SpawnSubagentOptions {
   system: string;
   /** The task / question / instruction the subagent must address. */
   task: string;
-  /** Model id for the child loop. Defaults to `deepseek-chat`. */
+  /** Model id for the child loop. Defaults to `deepseek-v4-pro`. */
   model?: string;
   /** Iteration ceiling for the child loop. Defaults to 16. */
   maxToolIters?: number;
@@ -173,7 +173,7 @@ export interface SubagentToolOptions {
   defaultSystem?: string;
   /** Project root for `applyProjectMemory` lookup. Omit in chat mode. */
   projectRoot?: string;
-  /** Default model. `deepseek-chat` (V3) by default. */
+  /** Default model. `deepseek-v4-pro` by default. */
   defaultModel?: string;
   /** Iteration ceiling. Lower than the parent (16 by default). */
   maxToolIters?: number;
@@ -200,7 +200,7 @@ Formatting rules (the parent renders your reply in a TUI with a real markdown re
 
 const DEFAULT_MAX_RESULT_CHARS = 8000;
 const DEFAULT_MAX_ITERS = 16;
-const DEFAULT_SUBAGENT_MODEL = "deepseek-chat";
+const DEFAULT_SUBAGENT_MODEL = "deepseek-v4-pro";
 
 const SUBAGENT_TOOL_NAME = "spawn_subagent";
 /**
@@ -423,9 +423,9 @@ export function registerSubagentTool(
         },
         model: {
           type: "string",
-          enum: ["deepseek-chat", "deepseek-reasoner"],
+          enum: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"],
           description:
-            "Which DeepSeek model the subagent runs on. 'deepseek-chat' (V3) is the default — fast and cheap. Use 'deepseek-reasoner' (R1) only when the subtask genuinely needs planning or multi-step reasoning; it is roughly 5-10x more expensive.",
+            "Which DeepSeek model the subagent runs on. Default is 'deepseek-v4-pro' — the strongest model, best for complex subtasks. Override to 'deepseek-v4-flash' (or the legacy 'deepseek-chat' / 'deepseek-reasoner' aliases, which route to flash non-thinking / thinking modes) when the subtask is simple enough that flash's quality suffices — flash is roughly 12× cheaper.",
         },
       },
       required: ["task"],

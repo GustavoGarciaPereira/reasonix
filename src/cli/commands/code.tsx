@@ -95,7 +95,7 @@ export async function codeCommand(opts: CodeOptions = {}): Promise<void> {
   );
 
   await chatCommand({
-    model: opts.model ?? "deepseek-reasoner",
+    model: opts.model ?? "deepseek-v4-pro",
     harvest: opts.harvest ?? false,
     system: codeSystemPrompt(rootDir),
     transcript: opts.transcript,

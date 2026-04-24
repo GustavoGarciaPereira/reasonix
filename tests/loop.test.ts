@@ -102,7 +102,10 @@ describe("CacheFirstLoop (non-streaming)", () => {
     await loop.run("q");
     expect(loop.stats.aggregateCacheHitRatio).toBeCloseTo(0.8);
     expect(loop.stats.totalCost).toBeGreaterThan(0);
-    expect(loop.stats.savingsVsClaude).toBeGreaterThan(0.9);
+    // Savings vs Claude depends on which DeepSeek model is the loop's
+    // default. v4-pro lands around 0.85; v4-flash around 0.97. Test the
+    // lower bound so a future default swap doesn't churn this assertion.
+    expect(loop.stats.savingsVsClaude).toBeGreaterThan(0.8);
   });
 
   it("dispatches a tool call and loops until the model stops", async () => {
@@ -386,18 +389,18 @@ describe("CacheFirstLoop (non-streaming)", () => {
       fn: async () => "ok",
     });
     // First response: chaining tool call with a prompt-token count
-    // deliberately over 80% of DeepSeek's 131k window (131k * 0.8 = 104_857).
-    // 120k trips the guard.
+    // deliberately over 80% of DeepSeek V4's 1M window (1M * 0.8 =
+    // 800k). 900k trips the guard.
     const responses: FakeResponseShape[] = [
       {
         content: "",
         tool_calls: [{ id: "c", type: "function", function: { name: "probe", arguments: "{}" } }],
         usage: {
-          prompt_tokens: 120_000,
+          prompt_tokens: 900_000,
           completion_tokens: 50,
-          total_tokens: 120_050,
-          prompt_cache_hit_tokens: 90_000,
-          prompt_cache_miss_tokens: 30_000,
+          total_tokens: 900_050,
+          prompt_cache_hit_tokens: 700_000,
+          prompt_cache_miss_tokens: 200_000,
         },
       },
       // Forced-summary response (no tools)
@@ -446,16 +449,17 @@ describe("CacheFirstLoop (non-streaming)", () => {
       fn: async () => "ok",
     });
     const responses: FakeResponseShape[] = [
-      // Iter 0: chains a tool call, usage trips the guard.
+      // Iter 0: chains a tool call, usage trips the 80% guard against
+      // V4's 1M window.
       {
         content: "",
         tool_calls: [{ id: "c1", type: "function", function: { name: "probe", arguments: "{}" } }],
         usage: {
-          prompt_tokens: 120_000,
+          prompt_tokens: 900_000,
           completion_tokens: 10,
-          total_tokens: 120_010,
-          prompt_cache_hit_tokens: 100_000,
-          prompt_cache_miss_tokens: 20_000,
+          total_tokens: 900_010,
+          prompt_cache_hit_tokens: 750_000,
+          prompt_cache_miss_tokens: 150_000,
         },
       },
       // Iter 1: model wraps up normally after the tool result.
@@ -505,16 +509,17 @@ describe("CacheFirstLoop (non-streaming)", () => {
       fn: async () => "ok",
     });
     const responses: FakeResponseShape[] = [
-      // 131k * 0.72 ≈ 94,320 tokens — squarely in the proactive band.
+      // V4's 1M window × 0.72 ≈ 720k tokens — squarely in the 60–80%
+      // proactive band without tripping the reactive 80% guard.
       {
         content: "",
         tool_calls: [{ id: "c1", type: "function", function: { name: "probe", arguments: "{}" } }],
         usage: {
-          prompt_tokens: 95_000,
+          prompt_tokens: 720_000,
           completion_tokens: 10,
-          total_tokens: 95_010,
-          prompt_cache_hit_tokens: 70_000,
-          prompt_cache_miss_tokens: 25_000,
+          total_tokens: 720_010,
+          prompt_cache_hit_tokens: 550_000,
+          prompt_cache_miss_tokens: 170_000,
         },
       },
       { content: "done." },

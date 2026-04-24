@@ -125,6 +125,18 @@ export class DeepSeekClient {
     if (opts.temperature !== undefined) payload.temperature = opts.temperature;
     if (opts.maxTokens !== undefined) payload.max_tokens = opts.maxTokens;
     if (opts.responseFormat) payload.response_format = opts.responseFormat;
+    // V4 thinking-mode toggle: lives under `extra_body.thinking.type` per
+    // DeepSeek's docs. Docs also note that in thinking mode `temperature`,
+    // `top_p`, `presence_penalty`, `frequency_penalty` are silently
+    // ignored — we don't strip them here because the server's explicit
+    // "setting won't report an error" contract means leaving them in is
+    // safe and keeps the request payload diffable against OpenAI tooling.
+    if (opts.thinking) {
+      payload.extra_body = { thinking: { type: opts.thinking } };
+    }
+    if (opts.reasoningEffort) {
+      payload.reasoning_effort = opts.reasoningEffort;
+    }
     return payload;
   }
 

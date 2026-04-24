@@ -242,6 +242,12 @@ export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
     summary: "run N parallel samples per turn (N>=2)",
     argCompleter: ["off", "2", "3", "4", "5"],
   },
+  {
+    cmd: "effort",
+    argsHint: "<high|max>",
+    summary: "reasoning_effort cap — max is default (agent-class), high is cheaper/faster",
+    argCompleter: ["max", "high"],
+  },
   { cmd: "mcp", summary: "list MCP servers + tools attached to this session" },
   {
     cmd: "resource",
@@ -485,6 +491,7 @@ export function handleSlash(
           "  /model <id>              deepseek-chat or deepseek-reasoner",
           "  /harvest [on|off]        Pillar 2: structured plan-state extraction",
           "  /branch <N|off>          run N parallel samples (N>=2), pick most confident",
+          "  /effort <high|max>       reasoning_effort cap (max=agent default, high=cheaper)",
           "  /mcp                     list MCP servers + tools attached to this session",
           "  /resource [uri]          browse + read MCP resources (no arg → list URIs; <uri> → fetch)",
           "  /prompt [name]           browse + fetch MCP prompts (no arg → list names; <name> → render)",
@@ -917,7 +924,7 @@ export function handleSlash(
       const planLine = ctx.planMode ? "  plan    ON — writes gated (submit_plan + approval)" : "";
       const lines = [
         `  model   ${loop.model}`,
-        `  flags   harvest=${loop.harvestEnabled ? "on" : "off"} · branch=${branchBudget > 1 ? branchBudget : "off"} · stream=${loop.stream ? "on" : "off"}`,
+        `  flags   harvest=${loop.harvestEnabled ? "on" : "off"} · branch=${branchBudget > 1 ? branchBudget : "off"} · stream=${loop.stream ? "on" : "off"} · effort=${loop.reasoningEffort}`,
         ctxLine,
         mcpLine,
         sessionLine,
@@ -1017,6 +1024,20 @@ export function handleSlash(
       }
       loop.configure({ branch: n });
       return { info: `branch → ${n}  (harvest auto-enabled; streaming disabled)` };
+    }
+
+    case "effort": {
+      const raw = (args[0] ?? "").toLowerCase();
+      if (raw === "") {
+        return {
+          info: `reasoning_effort → ${loop.reasoningEffort}  (use /effort high for cheaper/faster, /effort max for the agent-class default)`,
+        };
+      }
+      if (raw !== "high" && raw !== "max") {
+        return { info: "usage: /effort <high|max>" };
+      }
+      loop.configure({ reasoningEffort: raw });
+      return { info: `reasoning_effort → ${raw}` };
     }
 
     default:

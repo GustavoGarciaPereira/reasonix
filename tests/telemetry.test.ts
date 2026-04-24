@@ -97,13 +97,33 @@ describe("inputCostUsd / outputCostUsd", () => {
   });
 
   it("chat and reasoner are unified at the same price", () => {
-    // Post-unification (2026-04): DeepSeek charges identically for both
-    // models. If this test starts failing, either DeepSeek reintroduced
-    // tiered pricing (update the constants) or someone accidentally
-    // edited only one entry — catch that before shipping.
+    // 2026-04 V4 launch: `deepseek-chat` and `deepseek-reasoner` are
+    // compat aliases for v4-flash's non-thinking and thinking modes
+    // respectively, so billing is identical. If this diverges, either
+    // DeepSeek split them again (update the constants) or one alias
+    // got out of sync during an update — catch before shipping.
     const chat = DEEPSEEK_PRICING["deepseek-chat"]!;
     const reasoner = DEEPSEEK_PRICING["deepseek-reasoner"]!;
+    const flash = DEEPSEEK_PRICING["deepseek-v4-flash"]!;
     expect(reasoner).toEqual(chat);
+    expect(chat).toEqual(flash);
+  });
+
+  it("v4-pro pricing is present and strictly above v4-flash", () => {
+    const flash = DEEPSEEK_PRICING["deepseek-v4-flash"]!;
+    const pro = DEEPSEEK_PRICING["deepseek-v4-pro"]!;
+    expect(pro.inputCacheHit).toBeGreaterThan(flash.inputCacheHit);
+    expect(pro.inputCacheMiss).toBeGreaterThan(flash.inputCacheMiss);
+    expect(pro.output).toBeGreaterThan(flash.output);
+  });
+
+  it("v4-pro cost is computed with its own tier, not flash's", () => {
+    // Sanity: passing the pro model to costUsd doesn't silently fall
+    // back to flash rates, otherwise billing on pro would under-count.
+    const u = new Usage(0, 100, 0, 0, 1000);
+    const flashCost = costUsd("deepseek-v4-flash", u);
+    const proCost = costUsd("deepseek-v4-pro", u);
+    expect(proCost).toBeGreaterThan(flashCost * 5); // ~12x on output+miss
   });
 
   it("both return 0 for an unknown model", () => {

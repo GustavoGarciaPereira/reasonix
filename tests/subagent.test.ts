@@ -288,7 +288,7 @@ describe("registerSubagentTool", () => {
     registerSubagentTool(parent, { client });
     // "gpt-4" is not a deepseek-* model — should be ignored.
     await parent.dispatch("spawn_subagent", JSON.stringify({ task: "go", model: "gpt-4" }));
-    expect(seenModels[0]).toBe("deepseek-chat");
+    expect(seenModels[0]).toBe("deepseek-v4-pro");
   });
 
   it("aborts the child when the parent's tool ctx signal fires", async () => {

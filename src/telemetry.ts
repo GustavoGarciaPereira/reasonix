@@ -1,24 +1,33 @@
 import type { Usage } from "./client.js";
 
 /**
- * USD per 1M tokens. Source of truth is DeepSeek's CNY price sheet at
- * https://api-docs.deepseek.com/zh-cn/quick_start/pricing (as of
- * 2026-04-23): chat and reasoner are unified at ¥0.2 / ¥2 / ¥3 per 1M
- * tokens (cache-hit input / cache-miss input / output). Converted at
- * a fixed 7.2 CNY/USD rate so stats stay stable across the daily FX
+ * USD per 1M tokens. Source: DeepSeek's CNY price sheet
+ * (https://api-docs.deepseek.com/zh-cn/quick_start/pricing) converted
+ * at a fixed 7.2 CNY/USD rate so billing stays stable across daily FX
  * drift; revisit if the rate moves more than ±5%.
  *
- * Historical note: the pre-unification prices were chat $0.07/$0.27/$1.10
- * and reasoner $0.14/$0.55/$2.19. Sessions logged under those values
- * in `~/.reasonix/usage.jsonl` remain as-is (USD frozen at record time)
- * — we never retroactively rewrite billing history.
+ * 2026-04 V4 launch:
+ *   - deepseek-v4-flash  ¥0.2 / ¥1  / ¥2   (hit / miss / out per 1M)
+ *   - deepseek-v4-pro    ¥1   / ¥12 / ¥24
+ *
+ * deepseek-chat and deepseek-reasoner are now thin compat aliases for
+ * v4-flash's non-thinking and thinking modes respectively — same
+ * underlying model, same bill. We keep them in the table so existing
+ * sessions (and configs that hard-code these names) keep pricing.
+ *
+ * Historical note: sessions logged before this file was updated remain
+ * as-is in `~/.reasonix/usage.jsonl` — USD is frozen at record time,
+ * we never retroactively rewrite billing history.
  */
 export const DEEPSEEK_PRICING: Record<
   string,
   { inputCacheHit: number; inputCacheMiss: number; output: number }
 > = {
-  "deepseek-chat": { inputCacheHit: 0.028, inputCacheMiss: 0.28, output: 0.42 },
-  "deepseek-reasoner": { inputCacheHit: 0.028, inputCacheMiss: 0.28, output: 0.42 },
+  "deepseek-v4-flash": { inputCacheHit: 0.028, inputCacheMiss: 0.139, output: 0.278 },
+  "deepseek-v4-pro": { inputCacheHit: 0.139, inputCacheMiss: 1.667, output: 3.333 },
+  // Compat aliases — priced as v4-flash per the deprecation notice.
+  "deepseek-chat": { inputCacheHit: 0.028, inputCacheMiss: 0.139, output: 0.278 },
+  "deepseek-reasoner": { inputCacheHit: 0.028, inputCacheMiss: 0.139, output: 0.278 },
 };
 
 /** Reference Claude Sonnet 4.6 pricing (USD per 1M tokens). */
@@ -26,13 +35,21 @@ export const CLAUDE_SONNET_PRICING = { input: 3.0, output: 15.0 };
 
 /**
  * Maximum prompt-side context window per DeepSeek model, in tokens.
- * Both V3 (`deepseek-chat`) and R1 (`deepseek-reasoner`) currently expose
- * a 131,072-token prompt limit per the OpenAPI spec; completion caps
- * differ but don't affect the prompt budget the StatsPanel shows.
+ * V4 (flash + pro) jumps to 1,000,000 tokens. The compat aliases
+ * (deepseek-chat / deepseek-reasoner) inherit that through the
+ * v4-flash route — we bump them so the StatsPanel gauge reflects
+ * what the API actually accepts.
+ *
+ * Completion caps (e.g. 384K for V4) are enforced by the server, not
+ * tracked here — they don't affect the prompt-side budget the panel
+ * shows. If a future feature surfaces output-cap warnings we'll add
+ * a sibling table.
  */
 export const DEEPSEEK_CONTEXT_TOKENS: Record<string, number> = {
-  "deepseek-chat": 131_072,
-  "deepseek-reasoner": 131_072,
+  "deepseek-v4-flash": 1_000_000,
+  "deepseek-v4-pro": 1_000_000,
+  "deepseek-chat": 1_000_000,
+  "deepseek-reasoner": 1_000_000,
 };
 
 /** Fallback when the caller's model id isn't in the table — safe lower bound. */

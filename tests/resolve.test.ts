@@ -62,7 +62,7 @@ describe("resolveDefaults", () => {
   it("--preset max overrides config.preset=fast", () => {
     writeConfig({ preset: "fast" }, join(home, ".reasonix", "config.json"));
     const r = resolveDefaults({ preset: "max" });
-    expect(r.model).toBe("deepseek-reasoner");
+    expect(r.model).toBe("deepseek-v4-pro");
     expect(r.branch).toBe(3);
   });
 

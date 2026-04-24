@@ -78,6 +78,12 @@ export async function harvest(
   const trimmed = reasoningContent.trim();
   if (trimmed.length < minLen) return emptyPlanState();
 
+  // Harvest is schema-constrained JSON extraction, not agent reasoning.
+  // Default to `deepseek-chat` (= v4-flash non-thinking mode) — a few
+  // hundred output tokens fit easily in the non-thinking budget, the
+  // reply comes back ~10× faster than thinking mode, and the
+  // per-turn cost stays an asterisk next to the main loop's spend
+  // rather than a visible slice of it.
   const model = options.model ?? "deepseek-chat";
   const maxItems = options.maxItems ?? 5;
   const maxItemLen = options.maxItemLen ?? 80;
@@ -96,6 +102,13 @@ export async function harvest(
       responseFormat: { type: "json_object" },
       temperature: 0,
       maxTokens: 600,
+      // Pin mode + effort so a future default-model swap (e.g. someone
+      // sets `options.model = "deepseek-v4-pro"`) can't accidentally
+      // turn this micro-extraction into a multi-thousand-reasoning-
+      // token call. DeepSeek ignores these on non-thinking models, so
+      // the request stays valid regardless of the chosen model.
+      thinking: "disabled",
+      reasoningEffort: "high",
       signal,
     });
     return parsePlanState(resp.content, maxItems, maxItemLen);

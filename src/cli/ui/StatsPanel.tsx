@@ -57,6 +57,13 @@ export interface StatsPanelProps {
   harvestOn?: boolean;
   branchBudget?: number;
   /**
+   * Current `reasoning_effort` cap. Shown as a green "· max" / yellow
+   * "· high" tag in the header so the user always sees which tier the
+   * next turn will use. Absent/undefined hides the tag (e.g. before
+   * the loop is constructed).
+   */
+  reasoningEffort?: "high" | "max";
+  /**
    * True when `reasonix code` is currently running in read-only Plan
    * Mode. Surfaced as a red "PLAN" tag in the panel header so the user
    * can tell at a glance that edits are gated behind submit_plan +
@@ -110,6 +117,7 @@ export function StatsPanel({
   prefixHash,
   harvestOn,
   branchBudget,
+  reasoningEffort,
   planMode,
   balance,
   updateAvailable,
@@ -135,6 +143,7 @@ export function StatsPanel({
         harvestOn={harvestOn}
         branchOn={branchOn}
         branchBudget={branchBudget ?? 1}
+        reasoningEffort={reasoningEffort}
         planMode={planMode}
         turns={summary.turns}
         updateAvailable={updateAvailable}
@@ -168,6 +177,7 @@ function Header({
   harvestOn,
   branchOn,
   branchBudget,
+  reasoningEffort,
   planMode,
   turns,
   updateAvailable,
@@ -179,6 +189,7 @@ function Header({
   harvestOn?: boolean;
   branchOn: boolean;
   branchBudget: number;
+  reasoningEffort?: "high" | "max";
   planMode?: boolean;
   turns: number;
   updateAvailable?: string | null;
@@ -200,6 +211,8 @@ function Header({
         )}
         {harvestOn ? <Text color="magenta"> · harvest</Text> : null}
         {branchOn ? <Text color="blue"> · branch{branchBudget}</Text> : null}
+        {reasoningEffort === "max" ? <Text color="green"> · max</Text> : null}
+        {reasoningEffort === "high" ? <Text color="yellow"> · high</Text> : null}
         {planMode ? (
           <Text color="red" bold>
             {" · PLAN"}

@@ -184,6 +184,29 @@ describe("handleSlash", () => {
     expect(loop.branchEnabled).toBe(false);
   });
 
+  it("/effort <high|max> flips the reasoningEffort cap", () => {
+    const loop = makeLoop();
+    expect(loop.reasoningEffort).toBe("max");
+    handleSlash("effort", ["high"], loop);
+    expect(loop.reasoningEffort).toBe("high");
+    handleSlash("effort", ["max"], loop);
+    expect(loop.reasoningEffort).toBe("max");
+  });
+
+  it("/effort with no arg reports the current value, doesn't change it", () => {
+    const loop = makeLoop();
+    const r = handleSlash("effort", [], loop);
+    expect(r.info).toMatch(/reasoning_effort → max/);
+    expect(loop.reasoningEffort).toBe("max");
+  });
+
+  it("/effort rejects unknown values", () => {
+    const loop = makeLoop();
+    const r = handleSlash("effort", ["low"], loop);
+    expect(r.info).toMatch(/usage: \/effort <high\|max>/);
+    expect(loop.reasoningEffort).toBe("max");
+  });
+
   it("/branch caps at 8", () => {
     const loop = makeLoop();
     const r = handleSlash("branch", ["99"], loop);

@@ -1761,6 +1761,7 @@ export function App({
           prefixHash={prefixHash}
           harvestOn={loop.harvestEnabled}
           branchBudget={loop.branchOptions.budget}
+          reasoningEffort={loop.reasoningEffort}
           planMode={planMode}
           balance={balance}
           busy={busy}

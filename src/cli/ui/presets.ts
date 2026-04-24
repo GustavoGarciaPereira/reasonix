@@ -17,22 +17,27 @@ export interface PresetSettings {
 }
 
 export const PRESETS: Record<PresetName, PresetSettings> = {
+  // `deepseek-chat` / `deepseek-reasoner` are retained as the fast /
+  // smart models because they're deprecated-but-working compat aliases
+  // for v4-flash's non-thinking and thinking modes respectively. Same
+  // billing, smaller config churn for existing users. `max` promotes
+  // to v4-pro — 12× flash on input/output, reserved for hard tasks.
   fast: { model: "deepseek-chat", harvest: false, branch: 1 },
   smart: { model: "deepseek-reasoner", harvest: true, branch: 1 },
-  max: { model: "deepseek-reasoner", harvest: true, branch: 3 },
+  max: { model: "deepseek-v4-pro", harvest: true, branch: 3 },
 };
 
 export const PRESET_DESCRIPTIONS: Record<PresetName, { headline: string; cost: string }> = {
   fast: {
-    headline: "deepseek-chat, no reasoning harvest, no branching",
+    headline: "deepseek-chat (= v4-flash non-thinking), no harvest, no branching",
     cost: "~1¢ per 100 turns · default",
   },
   smart: {
-    headline: "deepseek-reasoner + Pillar 2 harvest",
-    cost: "~10× cost vs fast · slower · better on multi-step tasks",
+    headline: "deepseek-reasoner (= v4-flash thinking) + Pillar 2 harvest",
+    cost: "same price as fast · slower · better on multi-step tasks",
   },
   max: {
-    headline: "reasoner + harvest + self-consistency (3 branches)",
+    headline: "deepseek-v4-pro + harvest + self-consistency (3 branches)",
     cost: "~30× cost vs fast · slowest · for hard single-shots",
   },
 };

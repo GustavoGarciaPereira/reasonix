@@ -148,6 +148,11 @@ export interface CacheFirstLoopOptions {
    */
   branch?: number | BranchOptions;
   /**
+   * Reasoning-effort cap. See {@link ReconfigurableOptions} — default
+   * `max` for Reasonix (agent-class use per DeepSeek V4 docs).
+   */
+  reasoningEffort?: "high" | "max";
+  /**
    * Session name. When set, the loop pre-loads the session's prior messages
    * into its log on construction, and appends every new log entry to
    * `~/.reasonix/sessions/<name>.jsonl` so the next run can resume.
@@ -184,6 +189,14 @@ export interface ReconfigurableOptions {
   harvest?: boolean | HarvestOptions;
   branch?: number | BranchOptions;
   stream?: boolean;
+  /**
+   * Reasoning-effort cap sent per turn (V4 thinking mode only;
+   * deepseek-chat ignores it). Reasonix pins `max` by default because
+   * DeepSeek's V4 docs flag Claude-Code-style agent loops as the
+   * canonical `max` use case. `/effort high` lets a user step down
+   * mid-session for cheaper, faster turns on simple tasks.
+   */
+  reasoningEffort?: "high" | "max";
 }
 
 export class CacheFirstLoop {
@@ -204,6 +217,8 @@ export class CacheFirstLoop {
   harvestOptions: HarvestOptions;
   branchEnabled: boolean;
   branchOptions: BranchOptions;
+  /** See ReconfigurableOptions — mutable so `/effort` can flip mid-session. */
+  reasoningEffort: "high" | "max";
   sessionName: string | null;
 
   /**
@@ -233,7 +248,8 @@ export class CacheFirstLoop {
     this.client = opts.client;
     this.prefix = opts.prefix;
     this.tools = opts.tools ?? new ToolRegistry();
-    this.model = opts.model ?? "deepseek-chat";
+    this.model = opts.model ?? "deepseek-v4-pro";
+    this.reasoningEffort = opts.reasoningEffort ?? "max";
     // Iter cap is a safety net, not the primary stop condition. The
     // primary stop is the token-context guard inside step(): after
     // every model response we check whether the prompt is already past
@@ -402,6 +418,7 @@ export class CacheFirstLoop {
   configure(opts: ReconfigurableOptions): void {
     if (opts.model !== undefined) this.model = opts.model;
     if (opts.stream !== undefined) this._streamPreference = opts.stream;
+    if (opts.reasoningEffort !== undefined) this.reasoningEffort = opts.reasoningEffort;
 
     if (opts.branch !== undefined) {
       if (typeof opts.branch === "number") {
@@ -664,6 +681,8 @@ export class CacheFirstLoop {
               messages,
               tools: toolSpecs.length ? toolSpecs : undefined,
               signal,
+              thinking: thinkingModeForModel(this.model),
+              reasoningEffort: this.reasoningEffort,
             },
             {
               ...this.branchOptions,
@@ -730,6 +749,8 @@ export class CacheFirstLoop {
             messages,
             tools: toolSpecs.length ? toolSpecs : undefined,
             signal,
+            thinking: thinkingModeForModel(this.model),
+            reasoningEffort: this.reasoningEffort,
           })) {
             if (chunk.contentDelta) {
               assistantContent += chunk.contentDelta;
@@ -794,6 +815,8 @@ export class CacheFirstLoop {
             messages,
             tools: toolSpecs.length ? toolSpecs : undefined,
             signal,
+            thinking: thinkingModeForModel(this.model),
+            reasoningEffort: this.reasoningEffort,
           });
           assistantContent = resp.content;
           reasoningContent = resp.reasoningContent ?? "";
@@ -1105,6 +1128,8 @@ export class CacheFirstLoop {
         messages,
         // no tools → model is forced to answer in text
         signal: this._turnAbort.signal,
+        thinking: thinkingModeForModel(this.model),
+        reasoningEffort: this.reasoningEffort,
       });
       const rawContent = resp.content?.trim() ?? "";
       const cleaned = stripHallucinatedToolMarkup(rawContent);
@@ -1177,11 +1202,50 @@ export class CacheFirstLoop {
    */
   private syntheticAssistantMessage(content: string): ChatMessage {
     const msg: ChatMessage = { role: "assistant", content };
-    if (this.model.includes("reasoner")) {
+    if (isThinkingModeModel(this.model)) {
       msg.reasoning_content = "";
     }
     return msg;
   }
+}
+
+/**
+ * True when the model emits `reasoning_content` and therefore requires
+ * it round-tripped on follow-up requests.
+ *   - `deepseek-reasoner`: legacy R1 alias (= v4-flash thinking mode)
+ *   - `deepseek-v4-flash` / `deepseek-v4-pro`: default to thinking mode
+ *     per the V4 docs (2026-04)
+ *   - `deepseek-chat`: non-thinking compat alias → false
+ *
+ * Exported so tests can lock the behavior down as DeepSeek adds more
+ * model variants.
+ */
+export function isThinkingModeModel(model: string): boolean {
+  if (model.includes("reasoner")) return true;
+  if (model === "deepseek-v4-flash" || model === "deepseek-v4-pro") return true;
+  return false;
+}
+
+/**
+ * What `extra_body.thinking.type` value to send for a given model. Pins
+ * the mode explicitly rather than relying on the server default, which
+ * removes one source of ambiguity when DeepSeek validates the request's
+ * `reasoning_content` round-trip.
+ *
+ *   - `deepseek-chat`                   → "disabled" (non-thinking alias)
+ *   - `deepseek-reasoner`               → "enabled"  (thinking alias)
+ *   - `deepseek-v4-flash` / `-v4-pro`   → "enabled"  (V4 docs default)
+ *   - anything else                     → undefined (let server decide)
+ *
+ * Returning `undefined` makes the client skip the field entirely so
+ * third-party models routed through a DeepSeek-compatible endpoint
+ * don't get a parameter they don't recognize.
+ */
+export function thinkingModeForModel(model: string): "enabled" | "disabled" | undefined {
+  if (model === "deepseek-chat") return "disabled";
+  if (model.includes("reasoner")) return "enabled";
+  if (model === "deepseek-v4-flash" || model === "deepseek-v4-pro") return "enabled";
+  return undefined;
 }
 
 /**
