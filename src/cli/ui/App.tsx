@@ -1,21 +1,12 @@
 import type { WriteStream } from "node:fs";
-import { Box, Static, Text, useApp, useInput } from "ink";
+import { Box, Static, useApp, useInput } from "ink";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  type FileWithStats,
-  detectAtPicker,
-  expandAtMentions,
-  listFilesWithStatsSync,
-  rankPickerCandidates,
-} from "../../at-mentions.js";
-import { formatAllBlockDiffs, formatEditBlockDiff } from "../../code/diff-preview.js";
+import { expandAtMentions } from "../../at-mentions.js";
 import {
   type ApplyResult,
   type EditBlock,
-  type EditSnapshot,
   applyEditBlocks,
   parseEditBlocks,
-  restoreSnapshots,
   snapshotBeforeEdits,
   toWholeFileEditBlock,
 } from "../../code/edit-blocks.js";
@@ -38,18 +29,13 @@ import type { SessionSummary } from "../../telemetry.js";
 import type { ToolRegistry } from "../../tools.js";
 import { formatCommandResult, runCommand } from "../../tools/shell.js";
 import { registerSkillTools } from "../../tools/skills.js";
-import {
-  type SubagentEvent,
-  type SubagentSink,
-  formatSubagentResult,
-  spawnSubagent,
-} from "../../tools/subagent.js";
+import { formatSubagentResult, spawnSubagent } from "../../tools/subagent.js";
 import { openTranscriptFile, recordFromLoopEvent, writeRecord } from "../../transcript.js";
 import { appendUsage } from "../../usage.js";
-import { VERSION, compareVersions, getLatestVersion } from "../../version.js";
 import { AtMentionSuggestions } from "./AtMentionSuggestions.js";
 import { EditConfirm, type EditReviewChoice } from "./EditConfirm.js";
 import { type DisplayEvent, EventRow } from "./EventLog.js";
+import { ModeStatusBar, OngoingToolRow, StatusRow, SubagentRow, UndoBanner } from "./LiveRows.js";
 import { PlanConfirm, type PlanConfirmChoice } from "./PlanConfirm.js";
 import { PlanRefineInput } from "./PlanRefineInput.js";
 import { PromptInput } from "./PromptInput.js";
@@ -58,17 +44,15 @@ import { SlashArgPicker } from "./SlashArgPicker.js";
 import { SlashSuggestions } from "./SlashSuggestions.js";
 import { StatsPanel } from "./StatsPanel.js";
 import { detectBangCommand, formatBangUserMessage } from "./bang.js";
+import { describeRepair, formatEditResults, formatPendingPreview } from "./edit-history.js";
 import { handleMcpBrowseSlash } from "./mcp-browse.js";
 import { formatLongPaste } from "./paste-collapse.js";
-import {
-  type McpServerSummary,
-  type SlashArgContext,
-  detectSlashArgContext,
-  handleSlash,
-  parseSlash,
-  suggestSlashCommands,
-} from "./slash.js";
-import { TickerProvider, useElapsedSeconds, useTick } from "./ticker.js";
+import { type McpServerSummary, handleSlash, parseSlash, suggestSlashCommands } from "./slash.js";
+import { TickerProvider } from "./ticker.js";
+import { useCompletionPickers } from "./useCompletionPickers.js";
+import { useEditHistory } from "./useEditHistory.js";
+import { useSessionInfo } from "./useSessionInfo.js";
+import { useSubagent } from "./useSubagent.js";
 
 export interface AppProps {
   model: string;
@@ -118,54 +102,6 @@ export interface AppProps {
  * enough room to finish a repaint before the next one arrives.
  */
 const FLUSH_INTERVAL_MS = 100;
-
-/**
- * One batch of edits that actually landed on disk — durable enough for
- * `/undo`, `/history`, and `/show` within a session. Not persisted
- * across restarts: restoring pre-apply content from a process that
- * crashed last week is git's job, not ours.
- */
-interface EditHistoryEntry {
-  /** Sequence number within the session, stable for `/show <id>`. */
-  id: number;
-  /** Epoch ms when the entry was opened (first edit landed). */
-  at: number;
-  /**
-   * Short tag for what produced the batch — "auto" (auto-mode tool
-   * call), "auto-text" (auto-mode text SEARCH/REPLACE at turn end),
-   * "review-apply" (user-approved modal edit or /apply flush).
-   */
-  source: string;
-  /** Edit blocks included in this batch, in arrival order. */
-  blocks: EditBlock[];
-  /** Per-block outcome — some may be "not-found" if SEARCH drifted. */
-  results: ApplyResult[];
-  /**
-   * First-snapshot-per-path wins: this is what `/undo` restores to.
-   * Deduped so multi-edit turns still roll back to pre-turn state.
-   */
-  snapshots: EditSnapshot[];
-  /**
-   * Paths within this entry that have already been reverted (via
-   * `/undo <id>`, `/undo <id> <path>`, or the newest-non-undone /undo
-   * shortcut). Per-path instead of entry-level so a batch can be
-   * partially undone — user reverts src/foo.ts out of a 3-file batch
-   * without rolling back the other two.
-   */
-  undoneFiles: Set<string>;
-}
-
-/** True when every path in the entry has been undone. */
-function isEntryFullyUndone(e: EditHistoryEntry): boolean {
-  return e.snapshots.length > 0 && e.snapshots.every((s) => e.undoneFiles.has(s.path));
-}
-
-/** Per-entry three-state status label for display. */
-function entryStatus(e: EditHistoryEntry): "applied" | "UNDONE" | "PARTIAL" {
-  if (e.undoneFiles.size === 0) return "applied";
-  if (isEntryFullyUndone(e)) return "UNDONE";
-  return "PARTIAL";
-}
 
 /**
  * True when the user has opted out of live spinner/streaming rows.
@@ -219,41 +155,18 @@ export function App({
     total?: number;
     message?: string;
   } | null>(null);
-  // Live state for an in-flight subagent. The subagent runs inside a
-  // tool dispatch frame, so its events come in via a sink ref instead
-  // of through the parent loop's event channel. `null` when no
-  // subagent is currently active. A new spawn overwrites the previous
-  // entry — MVP is serial, never two at once.
-  const [subagentActivity, setSubagentActivity] = useState<{
-    task: string;
-    iter: number;
-    elapsedMs: number;
-  } | null>(null);
+  // Subagent UI wiring: live activity row + sink ref the loop closure
+  // captures. Must be declared BEFORE loop construction so the
+  // subagentRunner closure can read the ref.
+  const { activity: subagentActivity, sinkRef: subagentSinkRef } = useSubagent({
+    session,
+    setHistorical,
+  });
   // Transient "what's happening" text set by the loop during silent
   // phases (harvest round-trip, between-iteration R1 thinking, forced
   // summary). Rendered as a dim spinner row; auto-cleared on the next
   // primary event.
   const [statusLine, setStatusLine] = useState<string | null>(null);
-  // DeepSeek account balance — fetched once on mount, refreshed after
-  // each completed turn so the "how much do I have left" number
-  // tracks reality. `null` means either the endpoint failed or we
-  // haven't fetched yet; the panel hides the cell in that case.
-  const [balance, setBalance] = useState<{ currency: string; total: number } | null>(null);
-  // Model catalog fetched from DeepSeek's /models endpoint once at
-  // launch. `null` while the call is in flight or failed; `[]` means
-  // the API answered with zero models (unlikely but possible). Powers
-  // /models and validation in /model.
-  const [models, setModels] = useState<string[] | null>(null);
-  // Latest published version the npm registry returned, REGARDLESS
-  // of whether it's newer than what we're running. `null` only while
-  // the background check is in flight or when the network fails —
-  // so `/update` can distinguish "on latest" from "still fetching".
-  // The yellow header badge is derived: it only lights up when the
-  // fetched version is STRICTLY newer, but the slash surfaces the
-  // raw value so the user always gets a concrete number.
-  const [latestVersion, setLatestVersion] = useState<string | null>(null);
-  const updateAvailable =
-    latestVersion && compareVersions(VERSION, latestVersion) < 0 ? latestVersion : null;
   // Loaded user hooks (project + global settings.json). Stays mutable
   // so `/hooks reload` can rescan disk without reconstructing the
   // loop. The loop holds a parallel reference for its tool-event
@@ -265,20 +178,20 @@ export function App({
   // scripts that `cd $REASONIX_CWD` (or read `cwd` from the JSON
   // envelope) land in the project root, not the user's shell home.
   const hookCwd = codeMode?.rootDir ?? process.cwd();
-  // Session-scoped edit history. Each entry is one turn's worth of
-  // applied edits (first-snapshot-per-path wins so `/undo` restores the
-  // state at turn start). `/undo` walks back through non-undone entries
-  // newest-first; `/history` lists them; `/show <id>` dumps a stored
-  // diff. Not persisted to disk — cross-session rollback is what git
-  // is for. On /new we KEEP the history because disk state still
-  // correlates: wiping the chat doesn't un-apply the files.
-  const editHistory = useRef<EditHistoryEntry[]>([]);
-  const nextHistoryId = useRef(1);
-  // Mutable pointer to the in-progress entry (if any). Populated when
-  // the first edit of a turn lands, sealed implicitly when a new turn
-  // starts (handleSubmit nulls this). Subsequent edits in the same turn
-  // append into the same entry so `/undo` rolls back the whole batch.
-  const currentTurnEntry = useRef<EditHistoryEntry | null>(null);
+  // Session-scoped edit history + undo banner + /undo, /history, /show
+  // handlers. Kept in a custom hook so App.tsx only sees the small API
+  // it needs — append an edit, arm the banner, answer the slash
+  // callbacks, seal the turn entry, check whether anything's undoable.
+  const {
+    undoBanner,
+    recordEdit,
+    armUndoBanner,
+    codeUndo,
+    codeHistory,
+    codeShowEdit,
+    sealCurrentEntry,
+    hasUndoable,
+  } = useEditHistory(codeMode);
   // Pending edit blocks awaiting `/apply` or `/discard`. We do NOT
   // auto-apply — v0.4.1 showed that "model proposed, so apply" turns
   // analysis into unintended edits. The user explicitly confirms now.
@@ -305,15 +218,6 @@ export function App({
     editModeRef.current = editMode;
     if (codeMode) saveEditMode(editMode);
   }, [editMode, codeMode]);
-  // Post-auto-apply banner: rendered at the bottom for 5 seconds,
-  // dismissible with `u` (which triggers the same code path as /undo).
-  // `expiresAt` drives the countdown in the banner itself; the timer
-  // below clears the state unconditionally when the window ends.
-  const [undoBanner, setUndoBanner] = useState<{
-    results: ApplyResult[];
-    expiresAt: number;
-  } | null>(null);
-  const undoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Current per-edit confirmation prompt (review mode, tool-call path).
   // Non-null → EditConfirm modal renders, interceptor is suspended on
   // `editReviewResolveRef.current`, other live rows hide. User picks a
@@ -402,9 +306,6 @@ export function App({
   // because the user wouldn't expect `/tool` to reach back across
   // process boundaries.
   const toolHistoryRef = useRef<Array<{ toolName: string; text: string }>>([]);
-  // Highlighted suggestion index. ↑/↓ move within the current match
-  // set while the user is typing a `/…` prefix; Enter or Tab pick.
-  const [slashSelected, setSlashSelected] = useState(0);
   const [summary, setSummary] = useState<SessionSummary>({
     turns: 0,
     totalCostUsd: 0,
@@ -431,176 +332,7 @@ export function App({
     };
   }, []);
 
-  // The currently matching slash suggestions, or `null` when the
-  // user isn't in slash-prefix mode. Shared between the useInput
-  // handler (navigation + Tab-complete) and SlashSuggestions
-  // (rendering + highlight) so both stay in sync.
-  const slashMatches = useMemo(() => {
-    if (!input.startsWith("/") || input.includes(" ")) return null;
-    return suggestSlashCommands(input.slice(1), !!codeMode);
-  }, [input, codeMode]);
-  useEffect(() => {
-    // Keep selection in range whenever the match set shrinks. Reset
-    // to 0 whenever we re-enter slash mode (matches goes null → array
-    // triggers the useEffect too).
-    setSlashSelected((prev) => {
-      if (!slashMatches || slashMatches.length === 0) return 0;
-      if (prev >= slashMatches.length) return slashMatches.length - 1;
-      return prev;
-    });
-  }, [slashMatches]);
-
-  // File picker for `@` mentions — only meaningful in code mode where
-  // the model has filesystem tools and expandAtMentions is active.
-  const [atSelected, setAtSelected] = useState(0);
-  // Walk the code root ONCE on mount, collecting mtime alongside path
-  // so the picker can surface recently-edited files first. Files
-  // created mid-session via tool edits won't appear until restart —
-  // rare, and the user can always type the full path.
-  const atFiles = useMemo<readonly FileWithStats[]>(() => {
-    if (!codeMode?.rootDir) return [];
-    try {
-      return listFilesWithStatsSync(codeMode.rootDir, { maxResults: 500 });
-    } catch {
-      return [];
-    }
-  }, [codeMode?.rootDir]);
-  // LRU of files touched by recent tool calls (read_file / edit_file /
-  // write_file / search_content / directory_tree). Seeds the picker
-  // with "stuff I just looked at" at the top, so a user typing `@` in
-  // the same file they were just discussing gets it instantly.
-  const recentFilesRef = useRef<string[]>([]);
-  const recordRecentFile = useCallback((p: string) => {
-    const list = recentFilesRef.current;
-    const i = list.indexOf(p);
-    if (i >= 0) list.splice(i, 1);
-    list.unshift(p);
-    if (list.length > 20) list.length = 20;
-  }, []);
-  // Detect the trailing `@…` prefix and the partial query. `null` when
-  // we're not in picker mode (non-code mode, buffer doesn't end in a
-  // mention-in-progress, or already in slash mode).
-  const atPicker = useMemo(() => {
-    if (!codeMode?.rootDir) return null;
-    // Slash prefix wins — avoids the picker confusingly surfacing on
-    // `/@wat`-style edge inputs.
-    if (slashMatches !== null) return null;
-    return detectAtPicker(input);
-  }, [codeMode?.rootDir, input, slashMatches]);
-  const atMatches = useMemo<readonly string[] | null>(() => {
-    if (!atPicker) return null;
-    return rankPickerCandidates(atFiles, atPicker.query, {
-      limit: 40,
-      recentlyUsed: recentFilesRef.current,
-    });
-  }, [atPicker, atFiles]);
-  useEffect(() => {
-    setAtSelected((prev) => {
-      if (!atMatches || atMatches.length === 0) return 0;
-      if (prev >= atMatches.length) return atMatches.length - 1;
-      return prev;
-    });
-  }, [atMatches]);
-  // Substitute the trailing `@partial` with `@chosenPath ` and keep
-  // the rest of the buffer intact. The trailing space auto-closes
-  // the picker (regex no longer matches) so Enter next time submits
-  // cleanly without needing an explicit dismissal.
-  const pickAtMention = useCallback(
-    (chosenPath: string) => {
-      if (!atPicker) return;
-      const before = input.slice(0, atPicker.atOffset);
-      setInput(`${before}@${chosenPath} `);
-    },
-    [atPicker, input],
-  );
-
-  // Slash-argument picker. After `/<cmd> <partial>` we surface one of
-  // three states:
-  //   - file picker     → reuses `atFiles` + rankPickerCandidates
-  //   - enum picker     → literal values from spec.argCompleter
-  //   - usage hint only → dim "what goes here?" line
-  // Mutually exclusive with the slash-name picker (those conditions
-  // don't overlap by regex) and with the atMention picker (we don't
-  // run both — slash args take priority inside a slash buffer).
-  const [slashArgSelected, setSlashArgSelected] = useState(0);
-  const slashArgContext = useMemo<SlashArgContext | null>(() => {
-    // Only active inside a slash buffer that's past the name boundary.
-    if (!input.startsWith("/")) return null;
-    if (slashMatches !== null) return null;
-    return detectSlashArgContext(input, !!codeMode);
-  }, [input, slashMatches, codeMode]);
-  const slashArgMatches = useMemo<readonly string[] | null>(() => {
-    if (!slashArgContext || slashArgContext.kind !== "picker") return null;
-    const completer = slashArgContext.spec.argCompleter;
-    const partial = slashArgContext.partial;
-    const needle = partial.toLowerCase();
-    // Once the partial is an EXACT match for a valid completion, hide
-    // the picker so Enter submits the command instead of re-picking
-    // the same value in an infinite loop. Case-insensitive — users
-    // may type `/preset FAST` and still mean the same thing.
-    if (Array.isArray(completer)) {
-      if (partial && completer.some((v) => v.toLowerCase() === needle)) return null;
-      if (!partial) return completer.slice();
-      return completer.filter((v) => v.toLowerCase().startsWith(needle));
-    }
-    if (completer === "models") {
-      const all = models ?? [];
-      if (partial && all.some((m) => m.toLowerCase() === needle)) return null;
-      if (!partial) return all.slice(0, 40);
-      return all.filter((m) => m.toLowerCase().includes(needle)).slice(0, 40);
-    }
-    if (completer === "mcp-resources") {
-      // Aggregate URIs across every server's cached inspection. Prefix
-      // with the server label when >1 server so users can tell them
-      // apart — the read handler strips the prefix before calling.
-      const uris: string[] = [];
-      const servers = mcpServers ?? [];
-      for (const s of servers) {
-        if (!s.report.resources.supported) continue;
-        for (const r of s.report.resources.items) uris.push(r.uri);
-      }
-      if (partial && uris.some((u) => u.toLowerCase() === needle)) return null;
-      if (!partial) return uris.slice(0, 40);
-      return uris.filter((u) => u.toLowerCase().includes(needle)).slice(0, 40);
-    }
-    if (completer === "mcp-prompts") {
-      const names: string[] = [];
-      const servers = mcpServers ?? [];
-      for (const s of servers) {
-        if (!s.report.prompts.supported) continue;
-        for (const p of s.report.prompts.items) names.push(p.name);
-      }
-      if (partial && names.some((n) => n.toLowerCase() === needle)) return null;
-      if (!partial) return names.slice(0, 40);
-      return names.filter((n) => n.toLowerCase().includes(needle)).slice(0, 40);
-    }
-    return null;
-  }, [slashArgContext, models, mcpServers]);
-  useEffect(() => {
-    setSlashArgSelected((prev) => {
-      if (!slashArgMatches || slashArgMatches.length === 0) return 0;
-      if (prev >= slashArgMatches.length) return slashArgMatches.length - 1;
-      return prev;
-    });
-  }, [slashArgMatches]);
-  const pickSlashArg = useCallback(
-    (chosen: string) => {
-      if (!slashArgContext) return;
-      const before = input.slice(0, slashArgContext.partialOffset);
-      // No trailing space — enum picks (preset / model / plan / branch /
-      // harvest) take no further args, so the user presses Enter once
-      // more to run the command.
-      setInput(`${before}${chosen}`);
-    },
-    [slashArgContext, input],
-  );
-
   const loopRef = useRef<CacheFirstLoop | null>(null);
-  // Sink the subagent tool emits live events through (`start` →
-  // `progress` → `end`). App attaches its updater on first loop
-  // construction; the registration captures the ref by closure so even
-  // late spawns find the current handler.
-  const subagentSinkRef = useRef<SubagentSink>({ current: null });
   // hookList + hookCwd intentionally NOT in deps — they seed the loop
   // on first construction (loopRef guards a single instantiation), and
   // later edits flow in through the mutable `loop.hooks = hookList`
@@ -673,55 +405,42 @@ export function App({
     loop.hooks = hookList;
   }, [loop, hookList]);
 
-  // Fetch balance once the API key is known. Non-blocking — the
-  // session works without it; `null` hides the cell. We also refresh
-  // after each completed turn (inside handleSubmit's finally) so the
-  // number tracks actual spend rather than freezing at mount-time.
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const bal = await loop.client.getBalance().catch(() => null);
-      if (cancelled || !bal || !bal.balance_infos.length) return;
-      const primary = bal.balance_infos[0]!;
-      setBalance({ currency: primary.currency, total: Number(primary.total_balance) });
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [loop]);
+  // Ambient session info (balance, model catalog, latest published
+  // version) — three independent mount-time fetches behind one hook
+  // so the refresh callbacks can be wired into handleSubmit's finally
+  // (balance) and the slash context (/models, /update).
+  const {
+    balance,
+    models,
+    latestVersion,
+    updateAvailable,
+    refreshBalance,
+    refreshModels,
+    refreshLatestVersion,
+  } = useSessionInfo(loop);
 
-  // Fetch the model catalog from DeepSeek once. Same pattern as
-  // balance: silent degrade on failure (stays null), so /models can
-  // tell "still loading / offline" apart from "loaded, here's the list."
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const list = await loop.client.listModels().catch(() => null);
-      if (cancelled || !list) return;
-      setModels(list.data.map((m) => m.id));
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [loop]);
-
-  // Background registry check — 24h disk cache absorbs repeated
-  // launches, timeout bounded so a flaky network doesn't delay the
-  // notification. Set to `null` on failure (silent: no network, no
-  // problem). We store the raw version regardless of whether it's
-  // newer; the header badge's newer-only check happens at the
-  // `updateAvailable` derivation above.
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const latest = await getLatestVersion();
-      if (cancelled || !latest) return;
-      setLatestVersion(latest);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // Three mutually-exclusive input-prefix pickers (slash name, @ file
+  // mention, slash argument) — state + memos + commit callbacks live
+  // in a dedicated hook so App.tsx only sees the small surface it
+  // actually consumes in useInput / handleSubmit / render. Declared
+  // after useSessionInfo because the slash-arg picker reads the model
+  // catalog for `/model <partial>` completion.
+  const {
+    slashMatches,
+    slashSelected,
+    setSlashSelected,
+    atPicker,
+    atMatches,
+    atSelected,
+    setAtSelected,
+    pickAtMention,
+    recordRecentFile,
+    slashArgContext,
+    slashArgMatches,
+    slashArgSelected,
+    setSlashArgSelected,
+    pickSlashArg,
+  } = useCompletionPickers({ input, setInput, codeMode, models, mcpServers });
 
   // Wire the shared progressSink so the bridge's onProgress → us.
   // Only updates progress when the frame belongs to the currently-
@@ -740,70 +459,6 @@ export function App({
       if (progressSink.current) progressSink.current = null;
     };
   }, [progressSink]);
-
-  // Wire the subagent sink. `start` opens the activity row; each
-  // `progress` updates iter + elapsed in place; `end` clears the row
-  // and posts an info line summarizing the run. Only one subagent is
-  // active at a time in the MVP, so we treat overlapping events as a
-  // simple replace.
-  useEffect(() => {
-    subagentSinkRef.current.current = (ev: SubagentEvent) => {
-      if (ev.kind === "start") {
-        setSubagentActivity({
-          task: ev.task,
-          iter: ev.iter ?? 0,
-          elapsedMs: ev.elapsedMs ?? 0,
-        });
-        return;
-      }
-      if (ev.kind === "progress") {
-        setSubagentActivity({
-          task: ev.task,
-          iter: ev.iter ?? 0,
-          elapsedMs: ev.elapsedMs ?? 0,
-        });
-        return;
-      }
-      // end
-      setSubagentActivity(null);
-      const seconds = ((ev.elapsedMs ?? 0) / 1000).toFixed(1);
-      // Inline cost: the one number most users look at. Shown in the
-      // Historical row so they don't have to run `/stats` to see it.
-      const costTail =
-        ev.costUsd !== undefined && ev.costUsd > 0 ? ` · $${ev.costUsd.toFixed(4)}` : "";
-      const summary = ev.error
-        ? `⌬ subagent "${ev.task}" failed after ${seconds}s · ${ev.iter ?? 0} tool call(s) — ${ev.error}`
-        : `⌬ subagent "${ev.task}" done in ${seconds}s · ${ev.iter ?? 0} tool call(s) · ${ev.turns ?? 0} turn(s)${costTail}`;
-      setHistorical((prev) => [
-        ...prev,
-        {
-          id: `subagent-end-${Date.now()}`,
-          role: "info",
-          text: summary,
-        },
-      ]);
-      // Persist a subagent summary row to ~/.reasonix/usage.jsonl so
-      // `/stats` and `reasonix stats` surface it. Skipped on error — we
-      // only record what actually cost money and did work.
-      if (!ev.error && ev.usage && ev.model) {
-        appendUsage({
-          session: session ?? null,
-          model: ev.model,
-          usage: ev.usage,
-          kind: "subagent",
-          subagent: {
-            skillName: ev.skillName,
-            taskPreview: ev.task.slice(0, 60),
-            toolIters: ev.iter ?? 0,
-            durationMs: ev.elapsedMs ?? 0,
-          },
-        });
-      }
-    };
-    return () => {
-      subagentSinkRef.current.current = null;
-    };
-  }, [session]);
 
   // Surface a one-time banner about session state on first mount.
   const sessionBannerShown = useRef(false);
@@ -952,7 +607,7 @@ export function App({
       // Fire when EITHER the banner is up OR there's any non-undone
       // history entry — the keybind is useful long after the 5-second
       // banner expires, which users rightly want.
-      (undoBanner || editHistory.current.some((e) => !isEntryFullyUndone(e)))
+      (undoBanner || hasUndoable())
     ) {
       const out = codeUndo([]);
       setHistorical((prev) => [...prev, { id: `undo-${Date.now()}`, role: "info", text: out }]);
@@ -1051,246 +706,6 @@ export function App({
       }
     }
   });
-
-  /**
-   * Record a batch of successfully-applied edits into the session's
-   * edit history. If the current turn already has an open entry,
-   * append into it (first-wins-per-path so `/undo` restores the
-   * pre-turn state, not an intermediate half-edit). Otherwise open a
-   * new entry. Called by: the tool-call interceptor's auto / review-
-   * approved path, the text-block auto-apply at assistant_final, and
-   * `/apply` when flushing queued text blocks in review mode.
-   */
-  const recordEdit = useCallback(
-    (
-      source: string,
-      blocks: readonly EditBlock[],
-      results: readonly ApplyResult[],
-      snaps: readonly EditSnapshot[],
-    ) => {
-      if (snaps.length === 0) return;
-      let entry = currentTurnEntry.current;
-      if (!entry) {
-        entry = {
-          id: nextHistoryId.current++,
-          at: Date.now(),
-          source,
-          blocks: [],
-          results: [],
-          snapshots: [],
-          undoneFiles: new Set<string>(),
-        };
-        currentTurnEntry.current = entry;
-        editHistory.current.push(entry);
-      }
-      entry.blocks.push(...blocks);
-      entry.results.push(...results);
-      const seen = new Set(entry.snapshots.map((s) => s.path));
-      for (const s of snaps) {
-        if (!seen.has(s.path)) entry.snapshots.push(s);
-      }
-    },
-    [],
-  );
-
-  /**
-   * Show the post-auto-apply undo banner for 5 seconds. Overwrites any
-   * prior banner (the snapshot ref already spans the whole turn, so one
-   * banner is enough) and replaces the auto-dismiss timer so multiple
-   * edits inside a single turn don't prematurely expire the window.
-   */
-  const armUndoBanner = useCallback((results: ApplyResult[]) => {
-    setUndoBanner({ results, expiresAt: Date.now() + 5000 });
-    if (undoTimeoutRef.current) clearTimeout(undoTimeoutRef.current);
-    undoTimeoutRef.current = setTimeout(() => {
-      setUndoBanner(null);
-      undoTimeoutRef.current = null;
-    }, 5000);
-  }, []);
-
-  /**
-   * `/undo` — revert applied edits.
-   *   `/undo`                → newest non-fully-undone entry, all its
-   *                            remaining (non-undone) files.
-   *   `/undo <id>`           → that specific entry's remaining files.
-   *   `/undo <id> <path>`    → just that one file in that entry.
-   * Works as long as the session is alive; no 5-second banner limit.
-   */
-  const codeUndo = useCallback(
-    (args: readonly string[] = []): string => {
-      if (!codeMode) return "not in code mode";
-      const root = codeMode.rootDir;
-
-      const revert = (entry: EditHistoryEntry, paths: readonly string[]): string => {
-        const subset = entry.snapshots.filter((s) => paths.includes(s.path));
-        if (subset.length === 0) {
-          return `batch #${entry.id}: nothing to undo (already restored or path not in batch)`;
-        }
-        const results = restoreSnapshots(subset, root);
-        for (const s of subset) entry.undoneFiles.add(s.path);
-        if (currentTurnEntry.current === entry && isEntryFullyUndone(entry)) {
-          currentTurnEntry.current = null;
-        }
-        if (undoTimeoutRef.current) {
-          clearTimeout(undoTimeoutRef.current);
-          undoTimeoutRef.current = null;
-        }
-        setUndoBanner(null);
-        const when = new Date(entry.at).toISOString().replace("T", " ").slice(11, 19);
-        const scope = subset.length === 1 ? subset[0]!.path : `${subset.length} file(s)`;
-        const header = `▸ undo: reverted ${scope} from batch #${entry.id} (${when})`;
-        return [header, ...formatUndoRows(results)].join("\n");
-      };
-
-      const idArg = args[0];
-      const pathArg = args[1];
-
-      if (!idArg) {
-        // No args — newest non-fully-undone entry, all remaining files.
-        for (let i = editHistory.current.length - 1; i >= 0; i--) {
-          const e = editHistory.current[i]!;
-          if (isEntryFullyUndone(e)) continue;
-          const remaining = e.snapshots.map((s) => s.path).filter((p) => !e.undoneFiles.has(p));
-          return revert(e, remaining);
-        }
-        return "nothing to undo — every batch in the session history is already undone";
-      }
-
-      const id = Number.parseInt(idArg, 10);
-      if (!Number.isFinite(id)) {
-        return "usage: /undo [id] [path]   (omit id for newest; id from /history; path from /show <id>)";
-      }
-      const entry = editHistory.current.find((e) => e.id === id);
-      if (!entry) return `no edit #${id} — run /history to see valid ids`;
-
-      if (!pathArg) {
-        const remaining = entry.snapshots
-          .map((s) => s.path)
-          .filter((p) => !entry.undoneFiles.has(p));
-        if (remaining.length === 0) return `batch #${id} is already fully undone`;
-        return revert(entry, remaining);
-      }
-
-      // Per-file undo.
-      const snap = entry.snapshots.find((s) => s.path === pathArg);
-      if (!snap) {
-        const files = [...new Set(entry.blocks.map((b) => b.path))];
-        return `batch #${id} doesn't include "${pathArg}" — files in this batch: ${files.join(", ")}`;
-      }
-      if (entry.undoneFiles.has(pathArg)) {
-        return `${pathArg} in batch #${id} is already undone`;
-      }
-      return revert(entry, [pathArg]);
-    },
-    [codeMode],
-  );
-
-  /**
-   * `/history` — list every edit batch this session. Each entry's id
-   * is the token for `/show <id>` and the target of per-batch undo.
-   */
-  const codeHistory = useCallback((): string => {
-    if (!codeMode) return "not in code mode";
-    const entries = editHistory.current;
-    if (entries.length === 0) return "no edits recorded this session yet";
-    const lines = ["Edit history (oldest first):"];
-    for (const e of entries) {
-      const when = new Date(e.at).toISOString().replace("T", " ").slice(11, 19);
-      const files = new Set(e.blocks.map((b) => b.path));
-      const fileList = [...files].join(", ");
-      const fileSummary = fileList.length > 60 ? `${fileList.slice(0, 60)}…` : fileList;
-      const status = entryStatus(e);
-      const statusText =
-        status === "applied" ? "applied" : status === "PARTIAL" ? "PARTIAL" : "UNDONE ";
-      lines.push(
-        `  #${String(e.id).padStart(3)}  ${when}  ${statusText}  ${e.source.padEnd(12)} ${files.size} file · ${e.blocks.length} block   ${fileSummary}`,
-      );
-    }
-    lines.push("");
-    lines.push(
-      "/show <id>            → per-file summary    ·    /show <id> <path>  → full diff of one file",
-    );
-    lines.push(
-      "/undo                 → newest non-undone   ·    /undo <id> [path]  → target a specific batch or file",
-    );
-    return lines.join("\n");
-  }, [codeMode]);
-
-  /**
-   * `/show` — inspect a stored edit batch.
-   *   `/show`                → newest non-fully-undone entry, per-file summary.
-   *   `/show <id>`           → that entry's per-file summary.
-   *   `/show <id> <path>`    → full diff of one file in that entry.
-   * The diff is what the model proposed and what got applied; run
-   * `git diff` for "current disk state vs HEAD".
-   */
-  const codeShowEdit = useCallback(
-    (args: readonly string[] = []): string => {
-      if (!codeMode) return "not in code mode";
-      const entries = editHistory.current;
-      if (entries.length === 0) return "no edits recorded this session — /history is empty";
-
-      const idArg = args[0];
-      const pathArg = args[1];
-
-      let entry: EditHistoryEntry | undefined;
-      if (!idArg) {
-        entry =
-          [...entries].reverse().find((e) => !isEntryFullyUndone(e)) ?? entries[entries.length - 1];
-      } else {
-        const id = Number.parseInt(idArg, 10);
-        if (!Number.isFinite(id)) {
-          return "usage: /show [id] [path]   (omit id for newest; path from the per-file summary)";
-        }
-        entry = entries.find((e) => e.id === id);
-        if (!entry) return `no edit #${id} — run /history to see valid ids`;
-      }
-      if (!entry) return "unexpected: history lookup failed";
-
-      if (pathArg) {
-        // Full diff of one file.
-        const fileBlocks = entry.blocks.filter((b) => b.path === pathArg);
-        if (fileBlocks.length === 0) {
-          const files = [...new Set(entry.blocks.map((b) => b.path))];
-          return `batch #${entry.id} doesn't include "${pathArg}" — files in this batch: ${files.join(", ")}`;
-        }
-        const when = new Date(entry.at).toISOString().replace("T", " ").slice(11, 19);
-        const state = entry.undoneFiles.has(pathArg) ? "UNDONE" : "applied";
-        const header = `▸ edit #${entry.id} · ${when} · ${pathArg} · ${state} · ${fileBlocks.length} block(s)`;
-        const diff = formatAllBlockDiffs(fileBlocks, { maxLines: 60, contextLines: 2 });
-        const footer = entry.undoneFiles.has(pathArg)
-          ? "(already reverted — /history shows the batch-level status)"
-          : `/undo ${entry.id} ${pathArg}  → revert just this file`;
-        return [header, ...diff, "", footer].join("\n");
-      }
-
-      // Per-file summary for the whole entry.
-      const when = new Date(entry.at).toISOString().replace("T", " ").slice(11, 19);
-      const files = [...new Set(entry.blocks.map((b) => b.path))];
-      const status = entryStatus(entry);
-      const header = `▸ edit #${entry.id} · ${when} · ${entry.source} · ${status} · ${files.length} file(s)`;
-      const countLines = (s: string) => (s.length === 0 ? 0 : (s.match(/\n/g)?.length ?? 0) + 1);
-      const fileLines = files.map((path) => {
-        const fileBlocks = entry!.blocks.filter((b) => b.path === path);
-        let removed = 0;
-        let added = 0;
-        for (const b of fileBlocks) {
-          removed += countLines(b.search);
-          added += countLines(b.replace);
-        }
-        const state = entry!.undoneFiles.has(path) ? "UNDONE" : "applied";
-        return `  ${state.padEnd(7)}  -${String(removed).padStart(3)}/+${String(added).padStart(3)}   ${path}  (${fileBlocks.length} block${fileBlocks.length === 1 ? "" : "s"})`;
-      });
-      return [
-        header,
-        ...fileLines,
-        "",
-        `/show ${entry.id} <path>   → full diff of one file`,
-        `/undo ${entry.id} <path>   → revert just that file   ·   /undo ${entry.id} → revert whole batch`,
-      ].join("\n");
-    },
-    [codeMode],
-  );
 
   // Edit-gate interceptor. Reroutes `edit_file` / `write_file` tool
   // calls through the review queue (in `review` mode) or the auto-apply
@@ -1643,19 +1058,9 @@ export function App({
             return fresh.length;
           },
           latestVersion,
-          refreshLatestVersion: () => {
-            void (async () => {
-              const fresh = await getLatestVersion({ force: true });
-              if (fresh) setLatestVersion(fresh);
-            })();
-          },
+          refreshLatestVersion,
           models,
-          refreshModels: () => {
-            void (async () => {
-              const list = await loop.client.listModels().catch(() => null);
-              if (list) setModels(list.data.map((m) => m.id));
-            })();
-          },
+          refreshModels,
         });
         if (result.exit) {
           transcriptRef.current?.end();
@@ -1784,9 +1189,7 @@ export function App({
       // Seal the in-progress history entry so this turn's edits open
       // a new one — prior turns are preserved intact for /history and
       // `/undo` to walk back through independently.
-      if (codeMode) {
-        currentTurnEntry.current = null;
-      }
+      if (codeMode) sealCurrentEntry();
       // Reset per-turn edit policy so "apply-rest-of-turn" from the
       // previous turn doesn't carry over silently. User expects each
       // new prompt to start with the normal review gate re-armed.
@@ -2121,13 +1524,7 @@ export function App({
         setSummary(loop.stats.summary());
         setBusy(false);
         // Refresh balance lazily — don't block the return.
-        void (async () => {
-          const bal = await loop.client.getBalance().catch(() => null);
-          if (bal?.balance_infos.length) {
-            const p = bal.balance_infos[0]!;
-            setBalance({ currency: p.currency, total: Number(p.total_balance) });
-          }
-        })();
+        refreshBalance();
       }
     },
     [
@@ -2163,8 +1560,12 @@ export function App({
       writeTranscript,
       recordEdit,
       armUndoBanner,
+      sealCurrentEntry,
       editMode,
       syncPendingCount,
+      refreshBalance,
+      refreshLatestVersion,
+      refreshModels,
     ],
   );
 
@@ -2550,7 +1951,7 @@ export function App({
                 pendingCount={pendingCount}
                 flash={modeFlash}
                 planMode={planMode}
-                undoArmed={!!undoBanner || editHistory.current.some((e) => !isEntryFullyUndone(e))}
+                undoArmed={!!undoBanner || hasUndoable()}
                 jobs={codeMode.jobs}
               />
             ) : null}
@@ -2580,352 +1981,4 @@ export function App({
       </Box>
     </TickerProvider>
   );
-}
-
-/**
- * Live spinner row while a tool call is in flight. Without this the
- * window between the model's `tool_calls` decision and the tool's
- * result (often seconds for a multi-KB `filesystem_edit_file`) looks
- * like the app has frozen — the streaming assistant display is
- * already cleared and the input is disabled, so there's nothing to
- * look at.
- *
- * We show three signals: a braille spinner (liveness), an elapsed
- * timer in seconds (so "long" has a number attached), and a
- * per-tool summary of the most informative argument fields (path,
- * edits count, pattern, etc.). As of 0.4.8, MCP progress frames
- * (`notifications/progress`) land here too — bar + "n/N" when the
- * server reports a total, free-form message when not.
- */
-/**
- * Transient "what's happening now" row shown during silent phases
- * between the primary events — harvest round-trip, R1 thinking
- * about a tool result before the next streaming delta, forced
- * summary. Matches OngoingToolRow's visual language (braille
- * spinner + elapsed seconds) so the user's eyes track the same
- * spot regardless of which kind of wait it is.
- */
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-function StatusRow({ text }: { text: string }) {
-  const tick = useTick();
-  const elapsed = useElapsedSeconds();
-  return (
-    <Box marginY={1}>
-      <Text color="magenta">{SPINNER_FRAMES[tick % SPINNER_FRAMES.length]}</Text>
-      <Text color="magenta">{` ${text}`}</Text>
-      <Text dimColor>{` ${elapsed}s`}</Text>
-    </Box>
-  );
-}
-
-/**
- * One-line bottom status bar showing the current edit mode, pending
- * queue size (review only), an undo hint (auto only / after /apply),
- * and the Shift+Tab nudge. Rendered immediately above PromptInput so
- * the mode is always in peripheral vision when the user's eyes are at
- * the prompt. Flashes briefly on mode change so Shift+Tab gives a
- * visible acknowledgment without the user having to scan the header.
- *
- * The plan-mode pill takes precedence — when plan mode is on, writes
- * are bounced regardless of edit mode, so surfacing it is more useful
- * than the review/auto toggle.
- */
-function ModeStatusBar({
-  editMode,
-  pendingCount,
-  flash,
-  planMode,
-  undoArmed,
-  jobs,
-}: {
-  editMode: EditMode;
-  pendingCount: number;
-  flash: boolean;
-  planMode: boolean;
-  undoArmed: boolean;
-  jobs?: import("../../tools/jobs.js").JobRegistry;
-}) {
-  // Subscribe to tick so the jobs count stays live — the registry is
-  // mutated outside React, so we need a periodic repaint to catch it.
-  // No-op when there's no registry (chat mode / tests).
-  useTick();
-  const running = jobs?.runningCount() ?? 0;
-  const jobsTag =
-    running > 0 ? (
-      <Text color="yellow" bold>{`  ·  ⏵ ${running} job${running === 1 ? "" : "s"}`}</Text>
-    ) : null;
-  if (planMode) {
-    return (
-      <Box paddingX={1}>
-        <Text color="red" bold inverse={flash}>
-          {"▸ PLAN"}
-        </Text>
-        <Text dimColor>
-          {"  writes gated — submit_plan + approval required  ·  /plan off to leave"}
-        </Text>
-        {jobsTag}
-      </Box>
-    );
-  }
-  const label = editMode === "auto" ? "AUTO" : "review";
-  const color = editMode === "auto" ? "magenta" : "cyan";
-  const mid =
-    editMode === "auto"
-      ? undoArmed
-        ? "edits apply immediately  ·  u = undo last batch"
-        : "edits apply immediately  ·  5s undo window after each batch"
-      : pendingCount > 0
-        ? `${pendingCount} queued  ·  y = /apply  ·  n = /discard`
-        : "edits queue for review  ·  y = /apply  ·  n = /discard";
-  const flip = editMode === "auto" ? "Shift+Tab → review" : "Shift+Tab → AUTO";
-  return (
-    <Box paddingX={1}>
-      <Text color={color} bold inverse={flash}>
-        {`▸ ${label}`}
-      </Text>
-      <Text dimColor>{`  ${mid}  ·  ${flip}`}</Text>
-      {jobsTag}
-    </Box>
-  );
-}
-
-/**
- * "Just auto-applied N edits — press u to undo" banner. Rendered below
- * the live rows after an auto-mode edit batch lands, visible for 5s.
- * `useTick` drives a crude live countdown so the user sees the window
- * shrinking. State cleanup (the banner disappearing) happens in the
- * parent's setTimeout — the component is purely display.
- */
-function UndoBanner({
-  banner,
-}: {
-  banner: { results: ApplyResult[]; expiresAt: number };
-}) {
-  useTick();
-  const remainingMs = Math.max(0, banner.expiresAt - Date.now());
-  const remainingSec = Math.ceil(remainingMs / 1000);
-  const ok = banner.results.filter((r) => r.status === "applied" || r.status === "created").length;
-  const total = banner.results.length;
-  return (
-    <Box marginY={1} borderStyle="round" borderColor="magenta" paddingX={1}>
-      <Text color="magenta" bold>
-        {"✓ auto-applied "}
-      </Text>
-      <Text color="magenta">{`${ok}/${total} edit${total === 1 ? "" : "s"}`}</Text>
-      <Text dimColor>{" · press "}</Text>
-      <Text color="magenta" bold>
-        {"u"}
-      </Text>
-      <Text dimColor>{" to undo  ("}</Text>
-      <Text color={remainingSec <= 1 ? "red" : "magenta"}>{`${remainingSec}s`}</Text>
-      <Text dimColor>{")"}</Text>
-    </Box>
-  );
-}
-
-/**
- * Live one-line indicator for a running subagent. Sits below the
- * OngoingToolRow (the parent's tool dispatch row for `spawn_subagent`)
- * so the user sees both layers at once: outer "spawn_subagent
- * running…" + inner "⌬ subagent: <task> · iter N · 12.3s". Cleared
- * when the subagent ends; a one-line summary lands in historical.
- */
-function SubagentRow({
-  activity,
-}: {
-  activity: { task: string; iter: number; elapsedMs: number };
-}) {
-  const tick = useTick();
-  const seconds = (activity.elapsedMs / 1000).toFixed(1);
-  return (
-    <Box paddingLeft={2}>
-      <Text color="magenta">{SPINNER_FRAMES[tick % SPINNER_FRAMES.length]}</Text>
-      <Text color="magenta">{` ⌬ subagent: ${activity.task}`}</Text>
-      <Text dimColor>{` · iter ${activity.iter} · ${seconds}s`}</Text>
-    </Box>
-  );
-}
-
-function OngoingToolRow({
-  tool,
-  progress,
-}: {
-  tool: { name: string; args?: string };
-  progress: { progress: number; total?: number; message?: string } | null;
-}) {
-  const tick = useTick();
-  const elapsed = useElapsedSeconds();
-  const summary = summarizeToolArgs(tool.name, tool.args);
-  return (
-    <Box marginY={1} flexDirection="column">
-      <Box>
-        <Text color="cyan">{SPINNER_FRAMES[tick % SPINNER_FRAMES.length]}</Text>
-        <Text color="yellow">{` tool<${tool.name}> running…`}</Text>
-        <Text dimColor>{` ${elapsed}s`}</Text>
-      </Box>
-      {progress ? (
-        <Box paddingLeft={2}>
-          <Text color="cyan">{renderProgressLine(progress)}</Text>
-        </Box>
-      ) : null}
-      {summary ? (
-        <Box paddingLeft={2}>
-          <Text dimColor>{summary}</Text>
-        </Box>
-      ) : null}
-    </Box>
-  );
-}
-
-/**
- * Turn raw JSON tool arguments into a one-line human summary. For
- * common filesystem MCP tools we pull the actually-useful fields; for
- * anything else we fall back to a truncated raw string so the user
- * still sees *something* beyond the tool name.
- *
- * Match on suffix (e.g. `_read_file`) rather than exact name because
- * `bridgeMcpTools({ namePrefix: "filesystem_" })` prepends the server
- * namespace — tools arrive as `filesystem_read_file` in practice but
- * callers might wire up anonymous too.
- */
-/**
- * Render an MCP progress frame as a single line. When the server
- * reports `total`, show an ASCII progress bar + "n/total pct%";
- * otherwise just "progress" + optional message. Width is modest
- * so the line fits even in a narrow terminal.
- */
-function renderProgressLine(p: { progress: number; total?: number; message?: string }): string {
-  const msg = p.message ? `  ${p.message}` : "";
-  if (p.total && p.total > 0) {
-    const ratio = Math.max(0, Math.min(1, p.progress / p.total));
-    const width = 20;
-    const filled = Math.round(ratio * width);
-    const bar = "█".repeat(filled) + "░".repeat(width - filled);
-    const pct = (ratio * 100).toFixed(0);
-    return `[${bar}] ${p.progress}/${p.total} ${pct}%${msg}`;
-  }
-  return `progress: ${p.progress}${msg}`;
-}
-
-function summarizeToolArgs(name: string, args?: string): string {
-  if (!args || args === "{}") return "";
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(args) as Record<string, unknown>;
-  } catch {
-    // Unparseable JSON — show a head slice so user at least sees
-    // what the model tried.
-    return args.length > 80 ? `${args.slice(0, 80)}…` : args;
-  }
-  const hasSuffix = (s: string) => name === s || name.endsWith(`_${s}`);
-  const path = typeof parsed.path === "string" ? parsed.path : undefined;
-  if (hasSuffix("read_file")) {
-    const head = typeof parsed.head === "number" ? `, head=${parsed.head}` : "";
-    const tail = typeof parsed.tail === "number" ? `, tail=${parsed.tail}` : "";
-    return `path: ${path ?? "?"}${head}${tail}`;
-  }
-  if (hasSuffix("write_file")) {
-    const content = typeof parsed.content === "string" ? parsed.content : "";
-    return `path: ${path ?? "?"} (${content.length} chars)`;
-  }
-  if (hasSuffix("edit_file")) {
-    const edits = Array.isArray(parsed.edits) ? parsed.edits.length : 0;
-    return `path: ${path ?? "?"} (${edits} edit${edits === 1 ? "" : "s"})`;
-  }
-  if (hasSuffix("list_directory") || hasSuffix("directory_tree")) {
-    return `path: ${path ?? "?"}`;
-  }
-  if (hasSuffix("search_files")) {
-    const pattern = typeof parsed.pattern === "string" ? parsed.pattern : "?";
-    return `path: ${path ?? "?"} · pattern: ${pattern}`;
-  }
-  if (hasSuffix("move_file")) {
-    const src = typeof parsed.source === "string" ? parsed.source : "?";
-    const dst = typeof parsed.destination === "string" ? parsed.destination : "?";
-    return `${src} → ${dst}`;
-  }
-  if (hasSuffix("get_file_info")) {
-    return `path: ${path ?? "?"}`;
-  }
-  return args.length > 80 ? `${args.slice(0, 80)}…` : args;
-}
-
-/**
- * Render a batch of SEARCH/REPLACE application results as one
- * human-scannable info line per edit. Prefixes denote status so the
- * line reads well even without color (e.g. when piped to a log file
- * or stripped for screenshots):
- *   ✓ applied  src/foo.ts
- *   ✓ created  src/new.ts
- *   ✗ not-found  src/bar.ts (SEARCH text does not match…)
- */
-function formatEditResults(results: ApplyResult[]): string {
-  const lines = results.map((r) => {
-    const mark = r.status === "applied" || r.status === "created" ? "✓" : "✗";
-    const detail = r.message ? ` (${r.message})` : "";
-    return `  ${mark} ${r.status.padEnd(11)} ${r.path}${detail}`;
-  });
-  const ok = results.filter((r) => r.status === "applied" || r.status === "created").length;
-  const total = results.length;
-  const header = `▸ edit blocks: ${ok}/${total} applied — /undo to roll back, or \`git diff\` to review`;
-  return [header, ...lines].join("\n");
-}
-
-/**
- * Pending-edits preview shown after each assistant turn that proposed
- * changes. Per-block path header + ±line-count, then a unified-diff-
- * style preview (context trimmed to 2 lines each side, total capped
- * at 20 lines per block). Users can eyeball what's about to land
- * BEFORE pressing `y` — the old summary-only view was a common
- * mistake surface.
- */
-function formatPendingPreview(blocks: EditBlock[]): string {
-  const header = `▸ ${blocks.length} pending edit block(s) — /apply (or y) to commit · /discard (or n) to drop`;
-  const diffLines = formatAllBlockDiffs(blocks);
-  return [header, ...diffLines].join("\n");
-}
-
-/**
- * Render one tool-call-queued edit block as an inline preview row. Fires
- * once per intercepted edit_file / write_file call in review mode so the
- * user sees edits accrue in real time rather than only at turn end.
- */
-function formatQueuedEditPreview(block: EditBlock): string {
-  const removed = block.search === "" ? 0 : (block.search.match(/\n/g)?.length ?? 0) + 1;
-  const added = block.replace === "" ? 0 : (block.replace.match(/\n/g)?.length ?? 0) + 1;
-  const tag = block.search === "" ? "NEW " : "    ";
-  const header = `▸ queued  ${tag}${block.path}  (-${removed} +${added} lines)  · /apply or y to commit`;
-  return [header, ...formatEditBlockDiff(block)].join("\n");
-}
-
-function formatUndoResults(results: ApplyResult[]): string {
-  const lines = results.map((r) => {
-    const mark = r.status === "applied" ? "✓" : "✗";
-    const detail = r.message ? ` (${r.message})` : "";
-    return `  ${mark} ${r.path}${detail}`;
-  });
-  return [`▸ undo: restored ${results.length} file(s) to pre-edit state`, ...lines].join("\n");
-}
-
-/** Per-file rows for the multi-level `/undo` output, without the
- *  single-batch header (the caller prepends its own). */
-function formatUndoRows(results: ApplyResult[]): string[] {
-  return results.map((r) => {
-    const mark = r.status === "applied" ? "✓" : "✗";
-    const detail = r.message ? ` (${r.message})` : "";
-    return `  ${mark} ${r.path}${detail}`;
-  });
-}
-
-function describeRepair(repair: {
-  scavenged: number;
-  truncationsFixed: number;
-  stormsBroken: number;
-}): string {
-  const parts: string[] = [];
-  if (repair.scavenged) parts.push(`scavenged ${repair.scavenged}`);
-  if (repair.truncationsFixed) parts.push(`repaired ${repair.truncationsFixed} truncation`);
-  if (repair.stormsBroken) parts.push(`broke ${repair.stormsBroken} storm`);
-  return parts.length ? `[repair] ${parts.join(", ")}` : "";
 }
