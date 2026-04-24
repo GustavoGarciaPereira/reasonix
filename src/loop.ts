@@ -96,6 +96,19 @@ export interface LoopEvent {
   toolArgs?: string;
   /** Cumulative arguments-string length for `role === "tool_call_delta"`. */
   toolCallArgsChars?: number;
+  /**
+   * Zero-based index of the tool call this delta belongs to. Surfaces
+   * multi-tool turns: on a response emitting 4 write_file calls the UI
+   * can show "building call 3/?" instead of a context-free spinner.
+   */
+  toolCallIndex?: number;
+  /**
+   * Count of prior tool calls (this turn) whose arguments have finished
+   * streaming into valid JSON. Not all ready calls have been dispatched
+   * yet — dispatch still happens post-stream — but the user gets "2
+   * ready" progress feedback while later calls keep streaming.
+   */
+  toolCallReadyCount?: number;
   stats?: TurnStats;
   planState?: TypedPlanState;
   repair?: RepairReport;
@@ -705,6 +718,13 @@ export class CacheFirstLoop {
           };
         } else if (this.stream) {
           const callBuf: Map<number, ToolCall> = new Map();
+          // Indices whose accumulated args have parsed as valid JSON at
+          // least once. Purely informational — we don't dispatch until
+          // the stream ends (that's the eager-dispatch feature we
+          // intentionally punted) but the UI shows "N ready" so the
+          // user sees progress on long multi-tool turns instead of a
+          // stagnant "building tool call" spinner.
+          const readyIndices = new Set<number>();
           for await (const chunk of this.client.stream({
             model: this.model,
             messages,
@@ -740,6 +760,18 @@ export class CacheFirstLoop {
               if (d.argumentsDelta)
                 cur.function.arguments = (cur.function.arguments ?? "") + d.argumentsDelta;
               callBuf.set(d.index, cur);
+
+              // Mark this index "ready" once its args first parse as
+              // valid JSON. JSON.parse is sub-millisecond on typical
+              // tool-call payloads; skip the check once already ready.
+              if (
+                !readyIndices.has(d.index) &&
+                cur.function.name &&
+                looksLikeCompleteJson(cur.function.arguments ?? "")
+              ) {
+                readyIndices.add(d.index);
+              }
+
               // Skip the id-only opener: name is empty until the next chunk.
               if (cur.function.name) {
                 yield {
@@ -748,6 +780,8 @@ export class CacheFirstLoop {
                   content: "",
                   toolName: cur.function.name,
                   toolCallArgsChars: (cur.function.arguments ?? "").length,
+                  toolCallIndex: d.index,
+                  toolCallReadyCount: readyIndices.size,
                 };
               }
             }
@@ -1186,6 +1220,25 @@ function safeParseToolArgs(raw: string): unknown {
     return JSON.parse(raw);
   } catch {
     return raw;
+  }
+}
+
+/**
+ * Cheap "is this accumulated tool-call arguments blob now a complete
+ * JSON value?" check. Used during streaming to mark a tool call as
+ * ready for UI progress feedback — not for dispatch gating. Empty /
+ * whitespace-only is not complete; anything that parses is.
+ *
+ * Exported so tests can lock down the precise shapes we consider
+ * "ready" vs "still streaming."
+ */
+export function looksLikeCompleteJson(s: string): boolean {
+  if (!s || !s.trim()) return false;
+  try {
+    JSON.parse(s);
+    return true;
+  } catch {
+    return false;
   }
 }
 

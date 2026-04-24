@@ -1180,7 +1180,14 @@ export function App({
       const contentBuf = { current: "" };
       const reasoningBuf = { current: "" };
       // Coalesces tool_call_delta events into one re-render per flush tick.
-      const toolCallBuildBuf: { current: { name: string; chars: number } | null } = {
+      const toolCallBuildBuf: {
+        current: {
+          name: string;
+          chars: number;
+          index?: number;
+          readyCount?: number;
+        } | null;
+      } = {
         current: null,
       };
 
@@ -1259,6 +1266,8 @@ export function App({
               toolCallBuildBuf.current = {
                 name: ev.toolName,
                 chars: ev.toolCallArgsChars ?? 0,
+                index: ev.toolCallIndex,
+                readyCount: ev.toolCallReadyCount,
               };
             }
           } else if (ev.role === "branch_start") {

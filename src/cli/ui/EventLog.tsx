@@ -21,7 +21,7 @@ export interface DisplayEvent {
   stats?: TurnStats;
   repair?: string;
   streaming?: boolean;
-  toolCallBuild?: { name: string; chars: number };
+  toolCallBuild?: { name: string; chars: number; index?: number; readyCount?: number };
   /**
    * Render a thin horizontal rule above this event. Used to mark
    * "start of a new user turn" so long scrollbacks get visual
@@ -405,13 +405,15 @@ function StreamingAssistant({ event }: { event: DisplayEvent }) {
     label = `R1 reasoning · ${event.reasoning?.length ?? 0} chars of thought`;
     labelColor = "cyan";
   } else if (toolCallOnly) {
-    label = `assembling tool call <${toolCallBuild.name}> · ${toolCallBuild.chars} chars of arguments`;
+    label = `assembling tool call${formatToolCallIndex(toolCallBuild)} <${toolCallBuild.name}> · ${toolCallBuild.chars} chars of arguments${formatReadyTail(toolCallBuild)}`;
     labelColor = "magenta";
   } else {
     const parts: string[] = [`writing response · ${event.text.length} chars`];
     if (event.reasoning) parts.push(`after ${event.reasoning.length} chars of reasoning`);
     if (toolCallBuild) {
-      parts.push(`building tool call <${toolCallBuild.name}> · ${toolCallBuild.chars} chars`);
+      parts.push(
+        `building tool call${formatToolCallIndex(toolCallBuild)} <${toolCallBuild.name}> · ${toolCallBuild.chars} chars${formatReadyTail(toolCallBuild)}`,
+      );
     }
     label = parts.join(" · ");
     labelColor = "green";
@@ -467,6 +469,29 @@ function Pulse() {
   const tick = useTick();
   const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
   return <Text color="cyan">{frames[Math.floor(tick / 4) % frames.length]}</Text>;
+}
+
+/**
+ * "(call 3)" suffix for the tool-call label when we have the index.
+ * Hides when the turn only has one call so the common case stays tidy.
+ */
+function formatToolCallIndex(tb: { index?: number; readyCount?: number } | undefined): string {
+  if (!tb || tb.index === undefined) return "";
+  // Only show the index when this isn't obviously the first + only call.
+  if (tb.index === 0 && (tb.readyCount ?? 0) === 0) return "";
+  return ` (call ${tb.index + 1})`;
+}
+
+/**
+ * "· 2 ready" tail that answers "how many tool calls have finished
+ * streaming so far this turn?" — user feedback for multi-file turns
+ * where the response takes 10–30s to stream. Hidden until readyCount
+ * > 0 so single-call turns aren't cluttered.
+ */
+function formatReadyTail(tb: { readyCount?: number } | undefined): string {
+  const n = tb?.readyCount ?? 0;
+  if (n <= 0) return "";
+  return ` · ${n} ready`;
 }
 
 function lastLine(s: string, maxChars: number): string {
