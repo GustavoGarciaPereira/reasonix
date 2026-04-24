@@ -110,7 +110,17 @@ export class DeepSeekClient {
       process.env.DEEPSEEK_BASE_URL ??
       "https://api.deepseek.com"
     ).replace(/\/+$/, "");
-    this.timeoutMs = opts.timeoutMs ?? 120_000;
+    // 11 min. DeepSeek's load-balancer may keep a connection open for
+    // up to 10 minutes while the request waits in queue (non-streaming
+    // sends empty lines, streaming sends `:` SSE keep-alive comments —
+    // both are invisible to our parsers, so neither surfaces until the
+    // real response starts). Timing out at the legacy 2-min default
+    // killed queued requests prematurely, burned the queue slot on
+    // retry, and could loop through the whole queue repeatedly.
+    // Setting 11 min lets the server's own 10-min cap close the
+    // connection first (clean EOF → natural retry), and our timer
+    // is a safety net for genuinely hung sockets.
+    this.timeoutMs = opts.timeoutMs ?? 660_000;
     this._fetch = opts.fetch ?? globalThis.fetch.bind(globalThis);
     this.retry = opts.retry ?? {};
   }
