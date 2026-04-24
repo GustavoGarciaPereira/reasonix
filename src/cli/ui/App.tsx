@@ -37,6 +37,7 @@ import { AtMentionSuggestions } from "./AtMentionSuggestions.js";
 import { EditConfirm, type EditReviewChoice } from "./EditConfirm.js";
 import { type DisplayEvent, EventRow } from "./EventLog.js";
 import { ModeStatusBar, OngoingToolRow, StatusRow, SubagentRow, UndoBanner } from "./LiveRows.js";
+import { type CheckpointChoice, PlanCheckpointConfirm } from "./PlanCheckpointConfirm.js";
 import { PlanConfirm, type PlanConfirmChoice } from "./PlanConfirm.js";
 import { PlanRefineInput } from "./PlanRefineInput.js";
 import { PromptInput } from "./PromptInput.js";
@@ -277,6 +278,27 @@ export function App({
   const [stagedInput, setStagedInput] = useState<{
     plan: string;
     mode: "refine" | "approve";
+  } | null>(null);
+  // Mid-execution pause from `mark_step_complete` — the model finished
+  // a step and the loop is now waiting for the user to pick Continue /
+  // Revise / Stop. Distinct from `pendingPlan` because at this point
+  // the plan has already been approved and execution is in flight; the
+  // picker just checkpoints each step.
+  const [pendingCheckpoint, setPendingCheckpoint] = useState<{
+    stepId: string;
+    title?: string;
+    completed: number;
+    total: number;
+  } | null>(null);
+  // Staged entry for the Revise feedback input at a checkpoint. Carries
+  // enough context (stepId, title, counters) that Esc can restore the
+  // picker instead of dropping back into raw execution. Same two-step
+  // pattern as `stagedInput` for plan approvals.
+  const [stagedCheckpointRevise, setStagedCheckpointRevise] = useState<{
+    stepId: string;
+    title?: string;
+    completed: number;
+    total: number;
   } | null>(null);
   // Plan-mode indicator — displayed in the StatsPanel, mirrored onto
   // the ToolRegistry so dispatch enforces read-only. Toggled via the
@@ -590,7 +612,9 @@ export function App({
       !pendingShell &&
       !pendingPlan &&
       !stagedInput &&
-      !pendingEditReview
+      !pendingEditReview &&
+      !pendingCheckpoint &&
+      !stagedCheckpointRevise
     ) {
       setEditMode((m) => {
         const next: EditMode = m === "auto" ? "review" : "auto";
@@ -621,6 +645,8 @@ export function App({
       !pendingPlan &&
       !stagedInput &&
       !pendingEditReview &&
+      !pendingCheckpoint &&
+      !stagedCheckpointRevise &&
       // Fire when EITHER the banner is up OR there's any non-undone
       // history entry — the keybind is useful long after the 5-second
       // banner expires, which users rightly want.
@@ -1534,14 +1560,18 @@ export function App({
                 /* malformed payload — skip the picker */
               }
             }
-            // mark_step_complete fires during plan execution — the tool
-            // returns a `{ kind: "step_completed", ... }` JSON blob we
-            // translate into a compact scrollback row. Silent failure
-            // on parse errors: a malformed payload shouldn't take down
-            // the turn, it just means no progress row is shown.
+            // mark_step_complete fires during plan execution and throws
+            // PlanCheckpointError so the loop pauses. The registry
+            // serialized `{error, kind, stepId, title?, result, notes?}`
+            // via toToolResult(); we extract the step info, push a ✓
+            // scrollback row, and mount the checkpoint picker. Silent
+            // failure on parse errors — a malformed payload just means
+            // no progress row.
             if (ev.toolName === "mark_step_complete") {
               try {
-                const parsed = JSON.parse(ev.content) as Partial<StepCompletion>;
+                const parsed = JSON.parse(ev.content) as Partial<StepCompletion> & {
+                  error?: string;
+                };
                 const stepId = parsed.stepId;
                 if (parsed.kind === "step_completed" && typeof stepId === "string") {
                   completedStepIdsRef.current.add(stepId);
@@ -1566,6 +1596,17 @@ export function App({
                       },
                     },
                   ]);
+                  // The error-tagged payload means the tool threw
+                  // PlanCheckpointError — loop has paused. Mount the
+                  // picker so the user drives what happens next.
+                  // Plain success payloads (legacy / test harnesses)
+                  // just update progress without pausing.
+                  if (
+                    typeof parsed.error === "string" &&
+                    parsed.error.startsWith("PlanCheckpointError:")
+                  ) {
+                    setPendingCheckpoint({ stepId, title, completed, total });
+                  }
                 }
               } catch {
                 /* malformed payload — skip the progress row */
@@ -1931,8 +1972,103 @@ export function App({
     setStagedInput(null);
   }, [stagedInput]);
 
+  /**
+   * Checkpoint picker callback. Continue / Stop fire a synthetic user
+   * message immediately; Revise defers to a feedback input so the user
+   * can tell the model what to change before the next step.
+   */
+  const handleCheckpointConfirm = useCallback(
+    async (choice: CheckpointChoice) => {
+      const snap = pendingCheckpoint;
+      if (!snap) return;
+      setPendingCheckpoint(null);
+      if (choice === "revise") {
+        setStagedCheckpointRevise(snap);
+        return;
+      }
+      const label = snap.title ? `${snap.stepId} · ${snap.title}` : snap.stepId;
+      const counter = snap.total > 0 ? ` (${snap.completed}/${snap.total})` : "";
+      const { marker, synthetic } =
+        choice === "continue"
+          ? {
+              marker: `▸ continuing after ${label}${counter}`,
+              synthetic: `Step ${label} is complete. Proceed with the next step of the approved plan. If no steps remain, summarize the whole run.`,
+            }
+          : {
+              marker: `▸ plan stopped at ${label}${counter}`,
+              synthetic: `The user stopped the plan after step ${label}. Do not run any more steps and do not call any tools. Write a short summary of what was completed across all finished steps and what's left unfinished.`,
+            };
+      setHistorical((prev) => [
+        ...prev,
+        { id: `cp-${choice}-${Date.now()}`, role: "info", text: marker },
+      ]);
+      if (busy) {
+        loop.abort();
+        setQueuedSubmit(synthetic);
+      } else {
+        await handleSubmit(synthetic);
+      }
+    },
+    [pendingCheckpoint, busy, loop, handleSubmit],
+  );
+
+  // Same ref-wrap pattern as handlePlanConfirm — keeps the memo'd
+  // PlanCheckpointConfirm from re-rendering on every parent tick.
+  const handleCheckpointConfirmRef = useRef(handleCheckpointConfirm);
+  useEffect(() => {
+    handleCheckpointConfirmRef.current = handleCheckpointConfirm;
+  }, [handleCheckpointConfirm]);
+  const stableHandleCheckpointConfirm = useCallback(
+    async (choice: CheckpointChoice) => handleCheckpointConfirmRef.current(choice),
+    [],
+  );
+
+  /** Revise feedback submitted — push a synthetic adjustment message. */
+  const handleCheckpointReviseSubmit = useCallback(
+    async (feedback: string) => {
+      const snap = stagedCheckpointRevise;
+      setStagedCheckpointRevise(null);
+      if (!snap) return;
+      const label = snap.title ? `${snap.stepId} · ${snap.title}` : snap.stepId;
+      const trimmed = feedback.trim();
+      const synthetic = trimmed
+        ? `Step ${label} is complete. Before running the next step, adjust based on this user feedback:\n\n${trimmed}\n\nIf the feedback only tweaks execution, continue with the updated guidance. If it invalidates the remaining plan, call submit_plan again with a revised plan instead of continuing.`
+        : `Step ${label} is complete. Continue with the current plan.`;
+      const marker = trimmed
+        ? `▸ revising after ${label} — ${trimmed.length > 50 ? `${trimmed.slice(0, 50)}…` : trimmed}`
+        : `▸ continuing after ${label}`;
+      setHistorical((prev) => [
+        ...prev,
+        { id: `cp-revise-${Date.now()}`, role: "info", text: marker },
+      ]);
+      if (busy) {
+        loop.abort();
+        setQueuedSubmit(synthetic);
+      } else {
+        await handleSubmit(synthetic);
+      }
+    },
+    [stagedCheckpointRevise, busy, loop, handleSubmit],
+  );
+
+  /** Esc on the revise input — restore the checkpoint picker. */
+  const handleCheckpointReviseCancel = useCallback(() => {
+    const snap = stagedCheckpointRevise;
+    setStagedCheckpointRevise(null);
+    if (snap) setPendingCheckpoint(snap);
+  }, [stagedCheckpointRevise]);
+
   return (
-    <TickerProvider disabled={PLAIN_UI || !!pendingPlan || !!pendingShell || !!pendingEditReview}>
+    <TickerProvider
+      disabled={
+        PLAIN_UI ||
+        !!pendingPlan ||
+        !!pendingShell ||
+        !!pendingEditReview ||
+        !!pendingCheckpoint ||
+        !!stagedCheckpointRevise
+      }
+    >
       <Box flexDirection="column">
         <StatsPanel
           summary={summary}
@@ -1964,6 +2100,8 @@ export function App({
         !pendingPlan &&
         !stagedInput &&
         !pendingEditReview &&
+        !pendingCheckpoint &&
+        !stagedCheckpointRevise &&
         streaming ? (
           <Box marginY={1}>
             <EventRow event={streaming} projectRoot={hookCwd} />
@@ -1974,6 +2112,8 @@ export function App({
         !pendingPlan &&
         !stagedInput &&
         !pendingEditReview &&
+        !pendingCheckpoint &&
+        !stagedCheckpointRevise &&
         ongoingTool ? (
           <OngoingToolRow tool={ongoingTool} progress={toolProgress} />
         ) : null}
@@ -1982,6 +2122,8 @@ export function App({
         !pendingPlan &&
         !stagedInput &&
         !pendingEditReview &&
+        !pendingCheckpoint &&
+        !stagedCheckpointRevise &&
         subagentActivity ? (
           <SubagentRow activity={subagentActivity} />
         ) : null}
@@ -1990,6 +2132,8 @@ export function App({
         !pendingPlan &&
         !stagedInput &&
         !pendingEditReview &&
+        !pendingCheckpoint &&
+        !stagedCheckpointRevise &&
         !ongoingTool &&
         statusLine ? (
           <StatusRow text={statusLine} />
@@ -1999,7 +2143,9 @@ export function App({
         !pendingShell &&
         !pendingPlan &&
         !stagedInput &&
-        !pendingEditReview ? (
+        !pendingEditReview &&
+        !pendingCheckpoint &&
+        !stagedCheckpointRevise ? (
           <UndoBanner banner={undoBanner} />
         ) : null}
         {/*
@@ -2015,6 +2161,8 @@ export function App({
         !pendingPlan &&
         !stagedInput &&
         !pendingEditReview &&
+        !pendingCheckpoint &&
+        !stagedCheckpointRevise &&
         busy &&
         !streaming &&
         !ongoingTool &&
@@ -2026,6 +2174,20 @@ export function App({
             mode={stagedInput.mode}
             onSubmit={handleStagedInputSubmit}
             onCancel={handleStagedInputCancel}
+          />
+        ) : stagedCheckpointRevise ? (
+          <PlanRefineInput
+            mode="checkpoint-revise"
+            onSubmit={handleCheckpointReviseSubmit}
+            onCancel={handleCheckpointReviseCancel}
+          />
+        ) : pendingCheckpoint ? (
+          <PlanCheckpointConfirm
+            stepId={pendingCheckpoint.stepId}
+            title={pendingCheckpoint.title}
+            completed={pendingCheckpoint.completed}
+            total={pendingCheckpoint.total}
+            onChoose={stableHandleCheckpointConfirm}
           />
         ) : pendingPlan ? (
           <PlanConfirm

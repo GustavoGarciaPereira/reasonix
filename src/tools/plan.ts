@@ -97,9 +97,10 @@ export interface PlanToolOptions {
 }
 
 /**
- * Payload returned by `mark_step_complete`. The TUI parses the tool
- * result JSON, looks for `kind: "step_completed"`, and pushes a
- * progress row into the scrollback.
+ * Payload surfaced by `mark_step_complete` via `PlanCheckpointError`.
+ * The TUI parses the tool result JSON, pushes a `✓ step` progress row,
+ * and mounts the checkpoint picker. `kind` is kept on the payload so
+ * consumers that peek at the JSON can dispatch on a stable tag.
  */
 export interface StepCompletion {
   kind: "step_completed";
@@ -107,6 +108,42 @@ export interface StepCompletion {
   title?: string;
   result: string;
   notes?: string;
+}
+
+/**
+ * Thrown by `mark_step_complete`. Mirrors `PlanProposedError`: the
+ * registry serializes the structured payload via `toToolResult`, the
+ * TUI catches the error tag and pauses the loop until the user
+ * decides continue / revise / stop. The error message tells the model
+ * to stop calling tools so it doesn't race past the picker.
+ */
+export class PlanCheckpointError extends Error {
+  readonly stepId: string;
+  readonly title?: string;
+  readonly result: string;
+  readonly notes?: string;
+  constructor(update: { stepId: string; title?: string; result: string; notes?: string }) {
+    super(
+      "PlanCheckpointError: step complete — STOP calling tools. The TUI has paused the plan for user review. Wait for the next user message; it will either say continue (proceed to the next step), request a revision (adjust the remaining plan), or stop (summarize and end).",
+    );
+    this.name = "PlanCheckpointError";
+    this.stepId = update.stepId;
+    this.title = update.title;
+    this.result = update.result;
+    this.notes = update.notes;
+  }
+
+  toToolResult(): { error: string } & StepCompletion {
+    const payload: { error: string } & StepCompletion = {
+      error: `${this.name}: ${this.message}`,
+      kind: "step_completed",
+      stepId: this.stepId,
+      result: this.result,
+    };
+    if (this.title) payload.title = this.title;
+    if (this.notes) payload.notes = this.notes;
+    return payload;
+  }
 }
 
 function sanitizeSteps(raw: unknown): PlanStep[] | undefined {
@@ -177,7 +214,7 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
   registry.register({
     name: "mark_step_complete",
     description:
-      "Mark one step of the approved plan as done. Call this after finishing each step so the user sees progress in the TUI. Pass the `stepId` from the plan's steps array, a short `result` (what you did), and optional `notes` for anything surprising (errors, scope changes, follow-ups). This tool doesn't change any files — it only emits a progress signal. Don't call it if the plan didn't include structured steps, and don't invent ids that weren't in the original plan.",
+      "Mark one step of the approved plan as done AND pause for the user to review. Call this after finishing each step. The TUI shows a ✓ progress row and mounts a Continue / Revise / Stop picker — you MUST stop calling tools after this fires and wait for the next user message. Pass the `stepId` from the plan's steps array, a short `result` (what you did), and optional `notes` for anything surprising (errors, scope changes, follow-ups). This tool doesn't change any files. Don't call it if the plan didn't include structured steps, and don't invent ids that weren't in the original plan.",
     readOnly: true,
     parameters: {
       type: "object",
@@ -221,7 +258,7 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
       if (title) update.title = title;
       if (notes) update.notes = notes;
       opts.onStepCompleted?.(update);
-      return JSON.stringify(update);
+      throw new PlanCheckpointError({ stepId, title, result, notes });
     },
   });
   return registry;
