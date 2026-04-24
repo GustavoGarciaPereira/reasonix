@@ -648,6 +648,110 @@ describe("CacheFirstLoop (non-streaming)", () => {
   });
 });
 
+describe("CacheFirstLoop — self-reported escalation via <<<NEEDS_PRO>>>", () => {
+  function modelCapturingFetch(responses: FakeResponseShape[]): {
+    fetch: typeof fetch;
+    seenModels: string[];
+  } {
+    const seenModels: string[] = [];
+    let i = 0;
+    const fetchFn = vi.fn(async (_url: any, init: any) => {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      seenModels.push(body.model);
+      const resp = responses[i++] ?? responses[responses.length - 1]!;
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: resp.content ?? "",
+                reasoning_content: resp.reasoning_content ?? null,
+                tool_calls: resp.tool_calls ?? undefined,
+              },
+              finish_reason: resp.tool_calls ? "tool_calls" : "stop",
+            },
+          ],
+          usage: resp.usage ?? {
+            prompt_tokens: 100,
+            completion_tokens: 20,
+            total_tokens: 120,
+            prompt_cache_hit_tokens: 0,
+            prompt_cache_miss_tokens: 100,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    return { fetch: fetchFn, seenModels };
+  }
+
+  it("retries on v4-pro when flash outputs the NEEDS_PRO marker as lead-in", async () => {
+    const { fetch, seenModels } = modelCapturingFetch([
+      { content: "<<<NEEDS_PRO>>>" }, // first call on flash → escalation request
+      { content: "OK, here's the answer on pro." }, // retry on pro → real response
+    ]);
+    const loop = new CacheFirstLoop({
+      client: new DeepSeekClient({ apiKey: "sk-test", fetch }),
+      prefix: new ImmutablePrefix({ system: "be brief" }),
+      model: "deepseek-v4-flash",
+      stream: false,
+    });
+
+    const events: { role: string; content?: string }[] = [];
+    for await (const ev of loop.step("hard question")) {
+      events.push({ role: ev.role, content: ev.content });
+    }
+
+    // Two model calls total: first flash, second pro
+    expect(seenModels).toEqual(["deepseek-v4-flash", "deepseek-v4-pro"]);
+    // A warning surfaced about the retry
+    expect(events.some((e) => e.role === "warning" && /escalat/i.test(e.content ?? ""))).toBe(true);
+    // The final assistant message is the pro-generated content, not the marker
+    const finalEv = events.find((e) => e.role === "assistant_final");
+    expect(finalEv?.content).toBe("OK, here's the answer on pro.");
+  });
+
+  it("does not retry when the response merely mentions the marker mid-text", async () => {
+    const { fetch, seenModels } = modelCapturingFetch([
+      { content: "See the docs: <<<NEEDS_PRO>>> is a reserved marker." },
+    ]);
+    const loop = new CacheFirstLoop({
+      client: new DeepSeekClient({ apiKey: "sk-test", fetch }),
+      prefix: new ImmutablePrefix({ system: "be brief" }),
+      model: "deepseek-v4-flash",
+      stream: false,
+    });
+
+    for await (const _ev of loop.step("explain the marker")) {
+      /* drain */
+    }
+
+    expect(seenModels).toEqual(["deepseek-v4-flash"]);
+  });
+
+  it("does not escalate again when the model is already on pro", async () => {
+    // Even if pro happens to echo the marker, no infinite-retry loop.
+    const { fetch, seenModels } = modelCapturingFetch([
+      { content: "<<<NEEDS_PRO>>>" }, // on pro — should NOT trigger retry
+    ]);
+    const loop = new CacheFirstLoop({
+      client: new DeepSeekClient({ apiKey: "sk-test", fetch }),
+      prefix: new ImmutablePrefix({ system: "be brief" }),
+      model: "deepseek-v4-pro",
+      stream: false,
+    });
+
+    for await (const _ev of loop.step("hi")) {
+      /* drain */
+    }
+
+    // Exactly one call; no retry.
+    expect(seenModels).toEqual(["deepseek-v4-pro"]);
+  });
+});
+
 describe("CacheFirstLoop (streaming) — tool_call_delta emission", () => {
   it("yields tool_call_delta events carrying growing arg-char count", async () => {
     const client = new DeepSeekClient({

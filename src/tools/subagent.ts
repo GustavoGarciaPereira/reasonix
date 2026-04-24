@@ -45,7 +45,11 @@ import { type DeepSeekClient, Usage } from "../client.js";
 import { CacheFirstLoop } from "../loop.js";
 import { ImmutablePrefix } from "../memory.js";
 import { applyProjectMemory } from "../project-memory.js";
-import { NEGATIVE_CLAIM_RULE, TUI_FORMATTING_RULES } from "../prompt-fragments.js";
+import {
+  ESCALATION_CONTRACT,
+  NEGATIVE_CLAIM_RULE,
+  TUI_FORMATTING_RULES,
+} from "../prompt-fragments.js";
 import { ToolRegistry } from "../tools.js";
 
 /**
@@ -193,6 +197,8 @@ Rules:
 - Prefer one clear, distilled answer over a long log of what you tried.
 
 ${NEGATIVE_CLAIM_RULE}
+
+${ESCALATION_CONTRACT}
 
 ${TUI_FORMATTING_RULES}`;
 

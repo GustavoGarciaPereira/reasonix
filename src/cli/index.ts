@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { readConfig } from "../config.js";
 import { VERSION } from "../index.js";
+import { ESCALATION_CONTRACT } from "../prompt-fragments.js";
 import { applyMemoryStack } from "../user-memory.js";
 import { chatCommand } from "./commands/chat.js";
 import { codeCommand } from "./commands/code.js";
@@ -28,7 +29,9 @@ Every factual claim about a codebase must be backed by evidence. Reasonix VALIDA
 
 **Negative claims** ("X is missing", "Y isn't implemented", "lacks Z") are the #1 hallucination shape. STOP before writing them. If you have a search tool, call it first; if the search returns nothing, cite the search itself as evidence (\`No matches for "foo" in src/\`). If you have no tool, qualify hard: "I haven't verified — this is a guess."
 
-Asserting absence without checking is how evaluative answers go wrong. Treat the urge to write "missing" as a red flag in your own reasoning.`;
+Asserting absence without checking is how evaluative answers go wrong. Treat the urge to write "missing" as a red flag in your own reasoning.
+
+${ESCALATION_CONTRACT}`;
 
 const program = new Command();
 program

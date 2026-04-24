@@ -62,6 +62,21 @@ const FAILURE_ESCALATION_THRESHOLD = 3;
  * be constructing loops directly and can override at that layer.
  */
 const ESCALATION_MODEL = "deepseek-v4-pro";
+/**
+ * Self-report marker: when flash's first line of output is exactly
+ * this string, the loop aborts the current call and retries the
+ * turn on {@link ESCALATION_MODEL}. The model is instructed (via
+ * system prompts) to emit this only when the task is clearly beyond
+ * its ability — complex architecture refactors, subtle invariants,
+ * design tradeoffs the model can't resolve confidently. Keeps most
+ * users off the pro tier while giving flash a self-aware escape
+ * hatch for tasks it would otherwise botch.
+ */
+const NEEDS_PRO_MARKER = "<<<NEEDS_PRO>>>";
+/** Max chars of assistant content we buffer before flushing in the
+ *  streaming path — enough to distinguish a literal marker start
+ *  from real content that merely happens to contain angle-brackets. */
+const NEEDS_PRO_BUFFER_CHARS = 80;
 import { AppendOnlyLog, type ImmutablePrefix, VolatileScratch } from "./memory.js";
 import { type RepairReport, ToolCallRepair } from "./repair/index.js";
 import { appendSessionMessage, loadSessionMessages, rewriteSession } from "./session.js";
@@ -648,6 +663,18 @@ export class CacheFirstLoop {
   }
 
   /**
+   * True when the assistant's content is a self-reported escalation
+   * request. Only the FIRST line matters — the model is instructed
+   * to emit the marker as the first output token if at all. Matching
+   * anywhere else in the text is a normal content reference (e.g.
+   * the user asked about the marker itself, or prose that happens
+   * to contain angle-brackets).
+   */
+  private isEscalationRequest(content: string): boolean {
+    return content.trimStart().startsWith(NEEDS_PRO_MARKER);
+  }
+
+  /**
    * Check whether a tool result string looks like a "flash struggled"
    * signal and, if so, increment the turn's failure counter. Escalates
    * the REST of the current turn to pro once the threshold is hit.
@@ -1004,6 +1031,14 @@ export class CacheFirstLoop {
           // stagnant "building tool call" spinner.
           const readyIndices = new Set<number>();
           const callModel = this.modelForCurrentCall();
+          // Escalation-marker buffer: delay the first few assistant_delta
+          // yields so a "<<<NEEDS_PRO>>>" lead-in never flashes on-screen
+          // before we abort + retry. Only active on flash (pro never
+          // requests its own escalation). Flushed as one delta once we've
+          // seen enough to rule out the marker.
+          const bufferForEscalation = callModel !== ESCALATION_MODEL;
+          let escalationBuf = "";
+          let escalationBufFlushed = false;
           for await (const chunk of this.client.stream({
             model: callModel,
             messages,
@@ -1014,11 +1049,35 @@ export class CacheFirstLoop {
           })) {
             if (chunk.contentDelta) {
               assistantContent += chunk.contentDelta;
-              yield {
-                turn: this._turn,
-                role: "assistant_delta",
-                content: chunk.contentDelta,
-              };
+              if (bufferForEscalation && !escalationBufFlushed) {
+                escalationBuf += chunk.contentDelta;
+                // Early exit: marker matches — break and let the
+                // post-call retry path take over. No delta was yielded
+                // so the user sees nothing flicker.
+                if (this.isEscalationRequest(escalationBuf)) {
+                  break;
+                }
+                // Flush once we have enough content to rule out the
+                // marker (past one line or past the look-ahead window).
+                if (
+                  escalationBuf.length >= NEEDS_PRO_BUFFER_CHARS ||
+                  escalationBuf.includes("\n")
+                ) {
+                  escalationBufFlushed = true;
+                  yield {
+                    turn: this._turn,
+                    role: "assistant_delta",
+                    content: escalationBuf,
+                  };
+                  escalationBuf = "";
+                }
+              } else {
+                yield {
+                  turn: this._turn,
+                  role: "assistant_delta",
+                  content: chunk.contentDelta,
+                };
+              }
             }
             if (chunk.reasoningDelta) {
               reasoningContent += chunk.reasoningDelta;
@@ -1069,6 +1128,19 @@ export class CacheFirstLoop {
             if (chunk.usage) usage = chunk.usage;
           }
           toolCalls = [...callBuf.values()];
+          // Stream ended before the escalation buffer got flushed —
+          // either a short response or a partial marker match. If the
+          // buffer ISN'T the marker, flush it as the final delta so
+          // the user sees it. Marker-match is handled post-call.
+          if (bufferForEscalation && !escalationBufFlushed && escalationBuf.length > 0) {
+            if (!this.isEscalationRequest(escalationBuf)) {
+              yield {
+                turn: this._turn,
+                role: "assistant_delta",
+                content: escalationBuf,
+              };
+            }
+          }
         } else {
           const callModel = this.modelForCurrentCall();
           const resp = await this.client.chat({
@@ -1107,6 +1179,41 @@ export class CacheFirstLoop {
           error: formatLoopError(err as Error),
         };
         return;
+      }
+
+      // Self-reported escalation: the model (flash) emitted the
+      // NEEDS_PRO marker as its lead-in. Abort this call's accounting,
+      // flip the turn to pro, and re-enter the iter without advancing
+      // the counter — next attempt runs on v4-pro with the same
+      // messages. Only triggers when the call was on a model OTHER
+      // than the escalation model; if the user already configured
+      // v4-pro (via /preset max etc.), the marker is taken as a
+      // no-op content and passed through verbatim, so there's no
+      // infinite-retry loop.
+      if (
+        this.modelForCurrentCall() !== ESCALATION_MODEL &&
+        this.isEscalationRequest(assistantContent)
+      ) {
+        this._escalateThisTurn = true;
+        yield {
+          turn: this._turn,
+          role: "warning",
+          content: `⇧ flash requested escalation — retrying this turn on ${ESCALATION_MODEL}`,
+        };
+        // Reset per-iter state. We don't record stats for the rejected
+        // flash call (cost is small — a ~20-token lead-in that we broke
+        // out of early on streaming) — recording would attribute a
+        // phantom call to the session total.
+        assistantContent = "";
+        reasoningContent = "";
+        toolCalls = [];
+        usage = null;
+        branchSummary = undefined;
+        preHarvestedPlanState = undefined;
+        // Redo this iter on pro — `iter--` cancels the `iter++` the
+        // for loop runs on `continue`.
+        iter--;
+        continue;
       }
 
       // Attribute under the actual model used (escalated → pro, else
