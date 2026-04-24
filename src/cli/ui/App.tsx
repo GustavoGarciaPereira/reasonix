@@ -2353,11 +2353,14 @@ export function App({
             title={pendingCheckpoint.title}
             completed={pendingCheckpoint.completed}
             total={pendingCheckpoint.total}
+            steps={planStepsRef.current ?? undefined}
+            completedStepIds={completedStepIdsRef.current}
             onChoose={stableHandleCheckpointConfirm}
           />
         ) : pendingPlan ? (
           <PlanConfirm
             plan={pendingPlan}
+            steps={planStepsRef.current ?? undefined}
             onChoose={stableHandlePlanConfirm}
             projectRoot={hookCwd}
           />

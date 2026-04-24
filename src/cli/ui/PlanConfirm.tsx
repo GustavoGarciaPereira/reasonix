@@ -20,17 +20,20 @@
 
 import { Box, Text } from "ink";
 import React from "react";
+import type { PlanStep } from "../../tools/plan.js";
+import { PlanStepList } from "./PlanStepList.js";
 import { SingleSelect } from "./Select.js";
 
 export type PlanConfirmChoice = "approve" | "refine" | "cancel";
 
 export interface PlanConfirmProps {
   plan: string;
+  steps?: PlanStep[];
   onChoose: (choice: PlanConfirmChoice) => void;
   projectRoot?: string;
 }
 
-function PlanConfirmInner({ plan, onChoose }: PlanConfirmProps) {
+function PlanConfirmInner({ plan, steps, onChoose }: PlanConfirmProps) {
   // Crude signal for "the model left questions or risks for me" — the
   // typical section headings. Triggers an extra hint toward the Refine
   // option so users know where to answer them.
@@ -52,6 +55,11 @@ function PlanConfirmInner({ plan, onChoose }: PlanConfirmProps) {
             <Text bold>Refine / answer questions</Text> to write concrete answers before the model
             moves on.
           </Text>
+        </Box>
+      ) : null}
+      {steps && steps.length > 0 ? (
+        <Box marginTop={1} flexDirection="column">
+          <PlanStepList steps={steps} />
         </Box>
       ) : null}
       <Box marginTop={1}>

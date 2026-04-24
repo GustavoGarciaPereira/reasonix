@@ -18,6 +18,8 @@
 
 import { Box, Text } from "ink";
 import React from "react";
+import type { PlanStep } from "../../tools/plan.js";
+import { PlanStepList, type StepStatus } from "./PlanStepList.js";
 import { SingleSelect } from "./Select.js";
 
 export type CheckpointChoice = "continue" | "revise" | "stop";
@@ -27,6 +29,10 @@ export interface PlanCheckpointConfirmProps {
   title?: string;
   completed: number;
   total: number;
+  /** Full step list from the approved plan, when available. */
+  steps?: PlanStep[];
+  /** Set of stepIds the model has marked complete so far. */
+  completedStepIds?: Set<string>;
   onChoose: (choice: CheckpointChoice) => void;
 }
 
@@ -35,11 +41,14 @@ function PlanCheckpointConfirmInner({
   title,
   completed,
   total,
+  steps,
+  completedStepIds,
   onChoose,
 }: PlanCheckpointConfirmProps) {
   const label = title ? `${stepId} · ${title}` : stepId;
   const counter = total > 0 ? ` (${completed}/${total})` : "";
   const isLast = total > 0 && completed >= total;
+  const statuses = buildStatusMap(steps, completedStepIds, stepId, isLast);
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="green" paddingX={1} marginY={1}>
       <Box>
@@ -48,6 +57,11 @@ function PlanCheckpointConfirmInner({
         </Text>
         <Text dimColor>{`  ${label}${counter}`}</Text>
       </Box>
+      {steps && steps.length > 0 ? (
+        <Box marginTop={1} flexDirection="column">
+          <PlanStepList steps={steps} statuses={statuses} focusStepId={stepId} />
+        </Box>
+      ) : null}
       <Box marginTop={1}>
         <SingleSelect
           initialValue={isLast ? "stop" : "continue"}
@@ -78,3 +92,33 @@ function PlanCheckpointConfirmInner({
 }
 
 export const PlanCheckpointConfirm = React.memo(PlanCheckpointConfirmInner);
+
+/**
+ * Derive a status map from the plan + completion set + current step.
+ * The currently-just-finished step always renders as "done" even if
+ * completedStepIds hasn't been flushed yet (it gets added in the
+ * same render cycle, order not guaranteed). Steps ahead of the
+ * cursor are "pending"; the next step after the current one isn't
+ * marked "running" because nothing is actually running while the
+ * picker is up — that belongs to the post-continue state.
+ */
+function buildStatusMap(
+  steps: PlanStep[] | undefined,
+  completedStepIds: Set<string> | undefined,
+  currentStepId: string,
+  isLast: boolean,
+): Map<string, StepStatus> {
+  const map = new Map<string, StepStatus>();
+  if (!steps) return map;
+  for (const step of steps) {
+    if (completedStepIds?.has(step.id) || step.id === currentStepId) {
+      map.set(step.id, "done");
+    } else {
+      map.set(step.id, "pending");
+    }
+  }
+  if (isLast) {
+    // Every step is done; leave as "done" — no "running" overlay.
+  }
+  return map;
+}

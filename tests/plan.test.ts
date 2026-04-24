@@ -235,6 +235,55 @@ describe("registerPlanTool + submit_plan", () => {
     expect(parsed.steps).toBeUndefined();
   });
 
+  it("accepts and preserves valid risk levels on steps", async () => {
+    const reg = new ToolRegistry();
+    registerPlanTool(reg);
+    reg.setPlanMode(true);
+    const out = await reg.dispatch(
+      "submit_plan",
+      JSON.stringify({
+        plan: "# Plan",
+        steps: [
+          { id: "step-1", title: "safe", action: "local edit", risk: "low" },
+          { id: "step-2", title: "medium", action: "multi-file edit", risk: "med" },
+          { id: "step-3", title: "risky", action: "prod migration", risk: "high" },
+        ],
+      }),
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed.steps).toEqual([
+      { id: "step-1", title: "safe", action: "local edit", risk: "low" },
+      { id: "step-2", title: "medium", action: "multi-file edit", risk: "med" },
+      { id: "step-3", title: "risky", action: "prod migration", risk: "high" },
+    ]);
+  });
+
+  it("drops malformed risk values rather than letting them through", async () => {
+    const reg = new ToolRegistry();
+    registerPlanTool(reg);
+    reg.setPlanMode(true);
+    const out = await reg.dispatch(
+      "submit_plan",
+      JSON.stringify({
+        plan: "# Plan",
+        steps: [
+          { id: "step-1", title: "a", action: "b", risk: "critical" },
+          { id: "step-2", title: "c", action: "d", risk: 3 },
+          { id: "step-3", title: "e", action: "f" },
+        ],
+      }),
+    );
+    const parsed = JSON.parse(out);
+    // "critical" and 3 are rejected → risk field omitted; step-3 had
+    // no risk to begin with. All three steps survive (the step itself
+    // was well-formed; only the bad risk got dropped).
+    expect(parsed.steps).toEqual([
+      { id: "step-1", title: "a", action: "b" },
+      { id: "step-2", title: "c", action: "d" },
+      { id: "step-3", title: "e", action: "f" },
+    ]);
+  });
+
   it("keeps only the well-formed steps when the array is mixed", async () => {
     const reg = new ToolRegistry();
     registerPlanTool(reg);

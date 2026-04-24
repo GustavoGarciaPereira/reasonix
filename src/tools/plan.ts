@@ -36,10 +36,20 @@ import type { ToolRegistry } from "../tools.js";
  * pure markdown. When provided, each step is addressable by `id` so
  * the model can later mark it complete via `mark_step_complete`.
  */
+export type PlanStepRisk = "low" | "med" | "high";
+
 export interface PlanStep {
   id: string;
   title: string;
   action: string;
+  /**
+   * Optional self-reported risk level. Drives the colored dot gutter
+   * in PlanConfirm / PlanCheckpointConfirm: green (low) / yellow
+   * (med) / red (high). High-risk steps are the ones the user should
+   * actually read before approving — everything else is noise.
+   * Omitted when the model didn't categorize (treated as neutral).
+   */
+  risk?: PlanStepRisk;
 }
 
 /**
@@ -146,6 +156,11 @@ export class PlanCheckpointError extends Error {
   }
 }
 
+function sanitizeRisk(raw: unknown): PlanStepRisk | undefined {
+  if (raw === "low" || raw === "med" || raw === "high") return raw;
+  return undefined;
+}
+
 function sanitizeSteps(raw: unknown): PlanStep[] | undefined {
   if (!Array.isArray(raw)) return undefined;
   const steps: PlanStep[] = [];
@@ -156,7 +171,10 @@ function sanitizeSteps(raw: unknown): PlanStep[] | undefined {
     const title = typeof e.title === "string" ? e.title.trim() : "";
     const action = typeof e.action === "string" ? e.action.trim() : "";
     if (!id || !title || !action) continue;
-    steps.push({ id, title, action });
+    const step: PlanStep = { id, title, action };
+    const risk = sanitizeRisk(e.risk);
+    if (risk) step.risk = risk;
+    steps.push(step);
   }
   return steps.length > 0 ? steps : undefined;
 }
@@ -165,7 +183,7 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
   registry.register({
     name: "submit_plan",
     description:
-      "Submit ONE concrete plan you've already decided on. Use this for tasks that warrant a review gate — multi-file refactors, architecture changes, anything that would be expensive or confusing to undo. Skip it for small fixes (one-line typo, obvious bug with a clear fix) — just make the change. The user will either approve (you then implement it), ask for refinement, or cancel. If the user has already enabled /plan mode, writes are blocked at dispatch and you MUST use this. CRITICAL: do NOT use submit_plan to present alternative routes (A/B/C, option 1/2/3) for the user to pick from — the picker only exposes approve/refine/cancel, so a menu plan strands the user with no way to choose. For branching decisions, call `ask_choice` instead; only call submit_plan once the user has picked a direction and you have a single actionable plan. Write the plan as markdown with a one-line summary, a bulleted list of files to touch and what will change, and any risks or open questions. Optionally pass `steps` — an array of {id, title, action} — so the UI can track per-step progress; call `mark_step_complete` after finishing each one.",
+      "Submit ONE concrete plan you've already decided on. Use this for tasks that warrant a review gate — multi-file refactors, architecture changes, anything that would be expensive or confusing to undo. Skip it for small fixes (one-line typo, obvious bug with a clear fix) — just make the change. The user will either approve (you then implement it), ask for refinement, or cancel. If the user has already enabled /plan mode, writes are blocked at dispatch and you MUST use this. CRITICAL: do NOT use submit_plan to present alternative routes (A/B/C, option 1/2/3) for the user to pick from — the picker only exposes approve/refine/cancel, so a menu plan strands the user with no way to choose. For branching decisions, call `ask_choice` instead; only call submit_plan once the user has picked a direction and you have a single actionable plan. Write the plan as markdown with a one-line summary, a bulleted list of files to touch and what will change, and any risks or open questions. STRONGLY PREFERRED: pass `steps` — an array of {id, title, action, risk?} — so the UI renders a structured step list above the approval picker and tracks per-step progress. Use risk='high' for steps that touch prod data / break public APIs / are hard to undo; 'med' for non-trivial but reversible (multi-file edits, schema tweaks); 'low' for safe local work. After each step, call `mark_step_complete` so the user sees progress ticks.",
     readOnly: true,
     parameters: {
       type: "object",
@@ -178,7 +196,7 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
         steps: {
           type: "array",
           description:
-            "Optional structured step list. When provided, the UI shows a progress counter and each `mark_step_complete` call ticks one off. Use stable ids (step-1, step-2, ...). Skip for small plans where the markdown body is enough.",
+            "Structured step list (strongly recommended). When provided, the UI renders a compact step list above the approval picker AND tracks per-step progress via `mark_step_complete`. Use stable ids (step-1, step-2, ...). Skip only for tiny one-step plans where the markdown body is enough.",
           items: {
             type: "object",
             properties: {
@@ -187,6 +205,12 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
               action: {
                 type: "string",
                 description: "One-sentence description of the concrete action.",
+              },
+              risk: {
+                type: "string",
+                enum: ["low", "med", "high"],
+                description:
+                  "Self-assessed risk. 'high' = hard-to-undo / touches prod / breaks API; 'med' = non-trivial but reversible; 'low' = safe local work. The UI shows a colored dot per step so the user knows where to focus review. Omit if you're unsure.",
               },
             },
             required: ["id", "title", "action"],
