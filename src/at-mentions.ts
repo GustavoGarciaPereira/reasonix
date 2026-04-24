@@ -72,10 +72,30 @@ export interface ListFilesOptions {
  *   - entries the walker can't read (permission errors, broken links).
  */
 export function listFilesSync(root: string, opts: ListFilesOptions = {}): string[] {
+  return listFilesWithStatsSync(root, opts).map((e) => e.path);
+}
+
+export interface FileWithStats {
+  /** Relative path with forward-slash separator. */
+  path: string;
+  /** Modification time (Date.getTime() / ms since epoch). 0 when stat failed. */
+  mtimeMs: number;
+}
+
+/**
+ * Same walk as {@link listFilesSync} but also statS each file for
+ * modification time. Used by the `@` picker to surface recently-
+ * edited files first — matches VS Code Quick Open / similar UX.
+ *
+ * Stat failures don't throw: the entry is kept with `mtimeMs: 0` so
+ * it still appears in the picker (just sinks to the bottom of the
+ * recency sort).
+ */
+export function listFilesWithStatsSync(root: string, opts: ListFilesOptions = {}): FileWithStats[] {
   const maxResults = Math.max(1, opts.maxResults ?? 500);
   const ignore = new Set(opts.ignoreDirs ?? DEFAULT_PICKER_IGNORE_DIRS);
   const rootAbs = resolve(root);
-  const out: string[] = [];
+  const out: FileWithStats[] = [];
 
   const walk = (dirAbs: string, dirRel: string) => {
     if (out.length >= maxResults) return;
@@ -90,13 +110,16 @@ export function listFilesSync(root: string, opts: ListFilesOptions = {}): string
       if (out.length >= maxResults) return;
       const relPath = dirRel ? `${dirRel}/${ent.name}` : ent.name;
       if (ent.isDirectory()) {
-        // Skip dot-dirs (.git, .vscode, .idea…) and the explicit ignore
-        // list. Users who want to @-reference a file inside a dot-dir
-        // can type the full path — picker just doesn't surface them.
         if (ent.name.startsWith(".") || ignore.has(ent.name)) continue;
         walk(join(dirAbs, ent.name), relPath);
       } else if (ent.isFile()) {
-        out.push(relPath);
+        let mtimeMs = 0;
+        try {
+          mtimeMs = statSync(join(dirAbs, ent.name)).mtimeMs;
+        } catch {
+          /* stat failed (permission / EAGAIN) — keep the entry with mtime=0 */
+        }
+        out.push({ path: relPath, mtimeMs });
       }
     }
   };
@@ -134,34 +157,95 @@ export function detectAtPicker(input: string): { query: string; atOffset: number
   return { query, atOffset };
 }
 
+/** A candidate accepted by the picker ranker — either a bare path or a path with mtime. */
+export type PickerCandidate = string | FileWithStats;
+
+export interface RankPickerOptions {
+  /** Upper bound on returned entries. Default 40. */
+  limit?: number;
+  /**
+   * Paths the user or model has touched recently (via tool calls like
+   * `read_file` / `edit_file`). Matching paths get a recency boost so
+   * the picker surfaces "stuff I just looked at" near the top.
+   */
+  recentlyUsed?: readonly string[];
+}
+
 /**
  * Filter and rank candidate files against the picker's partial query.
- * Empty query → return the first `limit` candidates as-is (alpha).
- * Non-empty query → case-insensitive substring match, with a modest
- * boost for basename-starts-with matches so `src/l` still puts
- * `loop.ts`-shaped paths near the top.
+ *
+ * Empty query:
+ *   - Sort by "recently used" bucket first (if provided), then mtime
+ *     descending (newer first), then path alpha.
+ *   - Pure-string input (no mtime data) falls back to alpha since
+ *     recency info isn't available.
+ *
+ * Non-empty query:
+ *   - Case-insensitive substring match, with a basename-prefix boost
+ *     so `lo` floats `loop.ts`-shaped paths to the top.
+ *   - Ties broken first by recently-used membership, then mtime.
+ *
+ * Back-compat: passes `string[]` through the same logic (mtime = 0,
+ * recently-used still honored).
  */
 export function rankPickerCandidates(
-  files: readonly string[],
+  files: readonly PickerCandidate[],
   query: string,
-  limit = 40,
+  limitOrOpts?: number | RankPickerOptions,
 ): string[] {
-  if (!query) return files.slice(0, limit);
+  const opts: RankPickerOptions =
+    typeof limitOrOpts === "number" ? { limit: limitOrOpts } : (limitOrOpts ?? {});
+  const limit = opts.limit ?? 40;
+  const recent = new Set(opts.recentlyUsed ?? []);
+
+  const entries: FileWithStats[] = files.map((f) =>
+    typeof f === "string" ? { path: f, mtimeMs: 0 } : f,
+  );
+
+  if (!query) {
+    // Only re-sort when we actually have signal to sort by. If input
+    // is bare strings (mtime = 0 everywhere) AND there's no recent-
+    // used list, preserve input order so callers keep their existing
+    // layout. Passing FileWithStats or a non-empty recentlyUsed opts
+    // you into mtime+recency ranking.
+    const anyMtime = entries.some((e) => e.mtimeMs > 0);
+    if (!anyMtime && recent.size === 0) {
+      return entries.slice(0, limit).map((e) => e.path);
+    }
+    const sorted = [...entries].sort((a, b) => {
+      const aRecent = recent.has(a.path) ? 1 : 0;
+      const bRecent = recent.has(b.path) ? 1 : 0;
+      if (aRecent !== bRecent) return bRecent - aRecent;
+      if (a.mtimeMs !== b.mtimeMs) return b.mtimeMs - a.mtimeMs;
+      return a.path.localeCompare(b.path);
+    });
+    return sorted.slice(0, limit).map((e) => e.path);
+  }
+
   const needle = query.toLowerCase();
-  const scored: Array<{ path: string; score: number }> = [];
-  for (const f of files) {
-    const lower = f.toLowerCase();
+  const scored: Array<{ path: string; score: number; mtimeMs: number; recent: boolean }> = [];
+  for (const e of entries) {
+    const lower = e.path.toLowerCase();
     const hit = lower.indexOf(needle);
     if (hit < 0) continue;
-    // Rank: basename prefix < path prefix < substring. Lower score = better.
     const slash = lower.lastIndexOf("/");
     const base = slash >= 0 ? lower.slice(slash + 1) : lower;
     let score = 2;
     if (base.startsWith(needle)) score = 0;
     else if (lower.startsWith(needle)) score = 1;
-    scored.push({ path: f, score: score * 10_000 + hit });
+    scored.push({
+      path: e.path,
+      score: score * 10_000 + hit,
+      mtimeMs: e.mtimeMs,
+      recent: recent.has(e.path),
+    });
   }
-  scored.sort((a, b) => a.score - b.score);
+  scored.sort((a, b) => {
+    if (a.score !== b.score) return a.score - b.score;
+    // Tie-break: recently-used, then mtime (newer first).
+    if (a.recent !== b.recent) return a.recent ? -1 : 1;
+    return b.mtimeMs - a.mtimeMs;
+  });
   return scored.slice(0, limit).map((s) => s.path);
 }
 

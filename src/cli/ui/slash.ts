@@ -237,6 +237,7 @@ export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
     argsHint: "[tokens]",
     summary: "shrink oversized tool results in the log (cap in tokens, default 4000)",
   },
+  { cmd: "keys", summary: "show all keyboard shortcuts and prompt prefixes" },
   { cmd: "sessions", summary: "list saved sessions (current marked with ▸)" },
   { cmd: "forget", summary: "delete the current session from disk" },
   { cmd: "setup", summary: "reminds you to exit and run `reasonix setup`" },
@@ -322,12 +323,43 @@ export function handleSlash(
       };
     }
 
+    case "keys":
+      return {
+        info: [
+          "Keyboard & prompt shortcuts:",
+          "",
+          "  Enter                  submit the current prompt",
+          "  Shift+Enter  /  Ctrl+J  insert a newline (multi-line prompt)",
+          "  \\<Enter>               bash-style line continuation",
+          "  ← → ↑ ↓                move cursor / recall history when buffer empty",
+          "  Ctrl+A / Ctrl+E        jump to start / end of the current line",
+          "  Backspace              delete left;  Delete   delete under cursor",
+          "  Esc                    abort the in-flight turn",
+          "  y / n                  accept / reject pending edits (code mode)",
+          "",
+          "Prompt prefixes:",
+          "  /<name>                slash command; Tab/Enter picks from the suggestion list",
+          "  @<path>                inline a file under [Referenced files] (code mode).",
+          "                           Trailing `@…` opens a file picker; ↑/↓ navigate, Tab/Enter pick.",
+          "  !<cmd>                 run <cmd> as shell in the sandbox root; output goes into context",
+          "                           so the model sees it next turn. No allowlist gate.",
+          "",
+          "Pickers (slash + @-mention):",
+          "  ↑ / ↓                  navigate the suggestion list",
+          "  Tab                    insert the highlighted item without submitting",
+          "  Enter                  insert and (slash) run it, (@) keep editing",
+          "",
+          "Useful slashes: /help · /context · /stats · /compact · /new · /exit",
+        ].join("\n"),
+      };
+
     case "help":
     case "?":
       return {
         info: [
           "Commands:",
           "  /help                    this message",
+          "  /keys                    keyboard shortcuts + prompt prefixes (!, @, /)",
           "  /status                  show current settings",
           "  /preset <fast|smart|max> one-tap presets — see below",
           "  /model <id>              deepseek-chat or deepseek-reasoner",

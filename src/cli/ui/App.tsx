@@ -2,9 +2,10 @@ import type { WriteStream } from "node:fs";
 import { Box, Static, Text, useApp, useInput } from "ink";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  type FileWithStats,
   detectAtPicker,
   expandAtMentions,
-  listFilesSync,
+  listFilesWithStatsSync,
   rankPickerCandidates,
 } from "../../at-mentions.js";
 import { formatAllBlockDiffs } from "../../code/diff-preview.js";
@@ -305,17 +306,30 @@ export function App({
   // File picker for `@` mentions — only meaningful in code mode where
   // the model has filesystem tools and expandAtMentions is active.
   const [atSelected, setAtSelected] = useState(0);
-  // Walk the code root ONCE on mount. Files created mid-session via
-  // tool edits won't appear until restart — rare, and the user can
-  // always type the full path (picker's a convenience, not a gate).
-  const atFiles = useMemo<readonly string[]>(() => {
+  // Walk the code root ONCE on mount, collecting mtime alongside path
+  // so the picker can surface recently-edited files first. Files
+  // created mid-session via tool edits won't appear until restart —
+  // rare, and the user can always type the full path.
+  const atFiles = useMemo<readonly FileWithStats[]>(() => {
     if (!codeMode?.rootDir) return [];
     try {
-      return listFilesSync(codeMode.rootDir, { maxResults: 500 });
+      return listFilesWithStatsSync(codeMode.rootDir, { maxResults: 500 });
     } catch {
       return [];
     }
   }, [codeMode?.rootDir]);
+  // LRU of files touched by recent tool calls (read_file / edit_file /
+  // write_file / search_content / directory_tree). Seeds the picker
+  // with "stuff I just looked at" at the top, so a user typing `@` in
+  // the same file they were just discussing gets it instantly.
+  const recentFilesRef = useRef<string[]>([]);
+  const recordRecentFile = useCallback((p: string) => {
+    const list = recentFilesRef.current;
+    const i = list.indexOf(p);
+    if (i >= 0) list.splice(i, 1);
+    list.unshift(p);
+    if (list.length > 20) list.length = 20;
+  }, []);
   // Detect the trailing `@…` prefix and the partial query. `null` when
   // we're not in picker mode (non-code mode, buffer doesn't end in a
   // mention-in-progress, or already in slash mode).
@@ -328,7 +342,10 @@ export function App({
   }, [codeMode?.rootDir, input, slashMatches]);
   const atMatches = useMemo<readonly string[] | null>(() => {
     if (!atPicker) return null;
-    return rankPickerCandidates(atFiles, atPicker.query, 40);
+    return rankPickerCandidates(atFiles, atPicker.query, {
+      limit: 40,
+      recentlyUsed: recentFilesRef.current,
+    });
   }, [atPicker, atFiles]);
   useEffect(() => {
     setAtSelected((prev) => {
@@ -1150,6 +1167,29 @@ export function App({
             // the new spinner starts clean.
             setOngoingTool({ name: ev.toolName ?? "?", args: ev.toolArgs });
             setToolProgress(null);
+            // Feed the `@` picker's recency LRU from tool args — any
+            // path-shaped field (`path`, `file_path`, `file`) under a
+            // filesystem tool call means the user/model is actively
+            // working on that file. Picker surfaces it next time `@`
+            // is typed, even if the file's mtime is stale.
+            if (codeMode && ev.toolArgs) {
+              try {
+                const parsed = JSON.parse(ev.toolArgs) as {
+                  path?: unknown;
+                  file_path?: unknown;
+                  file?: unknown;
+                };
+                for (const k of ["path", "file_path", "file"] as const) {
+                  const v = parsed[k];
+                  if (typeof v === "string" && v.trim()) {
+                    recordRecentFile(v.trim());
+                    break;
+                  }
+                }
+              } catch {
+                /* malformed args — skip recency tracking */
+              }
+            }
           } else if (ev.role === "tool") {
             flush();
             setOngoingTool(null);
@@ -1284,6 +1324,7 @@ export function App({
       atPicker,
       atSelected,
       pickAtMention,
+      recordRecentFile,
       togglePlanMode,
       writeTranscript,
     ],

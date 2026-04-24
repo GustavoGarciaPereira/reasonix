@@ -19,12 +19,16 @@ export {
   detectAtPicker,
   expandAtMentions,
   listFilesSync,
+  listFilesWithStatsSync,
   rankPickerCandidates,
 } from "./at-mentions.js";
 export type {
   AtMentionExpansion,
   AtMentionOptions,
+  FileWithStats,
   ListFilesOptions,
+  PickerCandidate,
+  RankPickerOptions,
 } from "./at-mentions.js";
 export type {
   CacheFirstLoopOptions,

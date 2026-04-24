@@ -244,6 +244,65 @@ describe("rankPickerCandidates", () => {
     const r = rankPickerCandidates(files, "s", 2);
     expect(r).toHaveLength(2);
   });
+
+  it("sorts by mtime descending when entries carry FileWithStats and query is empty", () => {
+    const entries = [
+      { path: "a.ts", mtimeMs: 100 },
+      { path: "b.ts", mtimeMs: 300 },
+      { path: "c.ts", mtimeMs: 200 },
+    ];
+    const r = rankPickerCandidates(entries, "", 5);
+    // Newest (b, mtime 300) → middle (c, 200) → oldest (a, 100).
+    expect(r).toEqual(["b.ts", "c.ts", "a.ts"]);
+  });
+
+  it("recently-used paths float to the top on empty query regardless of mtime", () => {
+    const entries = [
+      { path: "a.ts", mtimeMs: 300 },
+      { path: "b.ts", mtimeMs: 100 },
+      { path: "c.ts", mtimeMs: 200 },
+    ];
+    const r = rankPickerCandidates(entries, "", {
+      limit: 5,
+      recentlyUsed: ["c.ts"],
+    });
+    // Recently-used c.ts comes first even though a.ts has a newer mtime.
+    expect(r[0]).toBe("c.ts");
+    // Remaining sorted by mtime descending.
+    expect(r[1]).toBe("a.ts");
+    expect(r[2]).toBe("b.ts");
+  });
+
+  it("tie-breaks query matches by recently-used, then mtime", () => {
+    const entries = [
+      { path: "src/alpha.ts", mtimeMs: 100 },
+      { path: "src/alpha2.ts", mtimeMs: 500 }, // newer
+    ];
+    const r = rankPickerCandidates(entries, "alpha", { limit: 5 });
+    // Both match with the same score (basename prefix, same hit
+    // position) — mtime tiebreak puts alpha2 first.
+    expect(r[0]).toBe("src/alpha2.ts");
+    expect(r[1]).toBe("src/alpha.ts");
+
+    // Now with recency: older alpha.ts boosted over newer alpha2.ts.
+    const r2 = rankPickerCandidates(entries, "alpha", {
+      limit: 5,
+      recentlyUsed: ["src/alpha.ts"],
+    });
+    expect(r2[0]).toBe("src/alpha.ts");
+    expect(r2[1]).toBe("src/alpha2.ts");
+  });
+
+  it("preserves input order on empty query when no mtime + no recency signal", () => {
+    // Back-compat: bare string input behaves as before.
+    const r = rankPickerCandidates(files, "", 3);
+    expect(r).toEqual(files.slice(0, 3));
+  });
+
+  it("accepts a number literal as the third arg for limit (back-compat)", () => {
+    const r = rankPickerCandidates(files, "loop", 1);
+    expect(r).toHaveLength(1);
+  });
 });
 
 describe("listFilesSync", () => {

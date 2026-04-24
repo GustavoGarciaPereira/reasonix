@@ -546,6 +546,34 @@ describe("handleSlash", () => {
     expect(r.info).toMatch(/\/edit/);
   });
 
+  describe("/keys", () => {
+    it("lists the major keyboard shortcuts", () => {
+      const r = handleSlash("keys", [], makeLoop());
+      expect(r.info).toMatch(/Enter\s+submit/);
+      expect(r.info).toMatch(/Shift\+Enter/);
+      expect(r.info).toMatch(/Ctrl\+J/);
+      expect(r.info).toMatch(/Esc\s+abort/);
+    });
+
+    it("documents the three prompt prefixes", () => {
+      const r = handleSlash("keys", [], makeLoop());
+      expect(r.info).toMatch(/\/<name>/);
+      expect(r.info).toMatch(/@<path>/);
+      expect(r.info).toMatch(/!<cmd>/);
+    });
+
+    it("mentions the pickers", () => {
+      const r = handleSlash("keys", [], makeLoop());
+      expect(r.info).toMatch(/[Pp]icker/);
+      expect(r.info).toMatch(/Tab/);
+    });
+  });
+
+  it("/help mentions /keys", () => {
+    const r = handleSlash("help", [], makeLoop());
+    expect(r.info).toMatch(/\/keys/);
+  });
+
   it("SLASH_COMMANDS registry contains every handler switch case", () => {
     // Spot-check a handful so the registry doesn't silently drift
     // from `handleSlash`. If a new case lands in handleSlash, it
@@ -574,6 +602,7 @@ describe("handleSlash", () => {
       "plan",
       "apply-plan",
       "edit",
+      "keys",
     ]) {
       expect(names, `registry missing /${required}`).toContain(required);
     }
