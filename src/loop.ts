@@ -525,7 +525,12 @@ export class CacheFirstLoop {
         };
         const stoppedMsg =
           "[aborted by user (Esc) — no summary produced. Ask again or /retry when ready; prior tool output is still in the log.]";
-        this.appendAndPersist({ role: "assistant", content: stoppedMsg });
+        // Synthetic assistant turn — no real model output exists. For
+        // reasoner sessions R1 still demands `reasoning_content` on
+        // every assistant message, so we attach an empty-string
+        // placeholder to satisfy the validator without inventing
+        // reasoning we don't have. V3 gets a plain message as before.
+        this.appendAndPersist(this.syntheticAssistantMessage(stoppedMsg));
         yield {
           turn: this._turn,
           role: "assistant_final",
@@ -1075,7 +1080,7 @@ export class CacheFirstLoop {
       const reasonPrefix = reasonPrefixFor(opts.reason, this.maxToolIters);
       const annotated = `${reasonPrefix}\n\n${summary}`;
       const summaryStats = this.stats.record(this._turn, this.model, resp.usage ?? new Usage());
-      this.appendAndPersist({ role: "assistant", content: summary });
+      this.appendAndPersist(this.assistantMessage(summary, [], resp.reasoningContent ?? undefined));
       yield {
         turn: this._turn,
         role: "assistant_final",
@@ -1113,14 +1118,33 @@ export class CacheFirstLoop {
   ): ChatMessage {
     const msg: ChatMessage = { role: "assistant", content };
     if (toolCalls.length > 0) msg.tool_calls = toolCalls;
-    // Only round-trip reasoning when it actually has body AND the turn
-    // has tool_calls — that's the specific shape R1 thinking mode
-    // requires. For plain text turns omitting reasoning is harmless and
-    // saves prompt bytes on the next turn (reasoning can be thousands
-    // of tokens). deepseek-chat never produces it, so the field stays
-    // absent and V3 requests are untouched.
-    if (toolCalls.length > 0 && reasoningContent && reasoningContent.length > 0) {
+    // DeepSeek's "thinking mode must be passed back" rule applies to
+    // ANY R1-generated assistant message, not just the ones with
+    // tool_calls. 0.5.15 mis-scoped this: if the loop produced a
+    // plain-text R1 turn (e.g. "plan submitted — awaiting approval")
+    // between a tool-call turn and the next user turn, its reasoning
+    // was stripped, and the following request 400'd with the same
+    // error we already thought we'd fixed. deepseek-chat never emits
+    // reasoning_content, so V3 requests stay untouched (the field
+    // simply isn't present).
+    if (reasoningContent && reasoningContent.length > 0) {
       msg.reasoning_content = reasoningContent;
+    }
+    return msg;
+  }
+
+  /**
+   * Build a synthetic assistant message we insert into the log without
+   * a real API round trip (abort notices, future system injections).
+   * Reasoner models reject follow-up requests whose assistant history
+   * is missing `reasoning_content`, so we stamp an empty-string
+   * placeholder on reasoner sessions to satisfy the validator. V3
+   * doesn't care — field stays absent there.
+   */
+  private syntheticAssistantMessage(content: string): ChatMessage {
+    const msg: ChatMessage = { role: "assistant", content };
+    if (this.model.includes("reasoner")) {
+      msg.reasoning_content = "";
     }
     return msg;
   }

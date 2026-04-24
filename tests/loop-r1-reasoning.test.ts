@@ -110,11 +110,16 @@ describe("R1 reasoning_content round-trip", () => {
     expect(assistantWithCalls?.reasoning_content).toBe("I should call noop to check something.");
   });
 
-  it("does NOT emit reasoning_content on plain-text assistant turns (no tool_calls)", async () => {
+  it("also preserves reasoning_content on plain-text reasoner turns", async () => {
+    // 0.5.18 regression: R1 requires reasoning_content on ANY
+    // assistant message the model produced in thinking mode, not just
+    // ones with tool_calls. 0.5.15 scoped the fix too narrowly and a
+    // plan-approval flow (submit_plan → "plan submitted" plain-text
+    // turn → approval) kept 400ing on the follow-up request.
     const { fetch: fakeFetch, bodies } = capturingFetch([
       {
         content: "a plain answer",
-        reasoning_content: "some reasoning that shouldn't be round-tripped",
+        reasoning_content: "reasoning attached to a plain-text turn",
       },
       { content: "follow-up" },
     ]);
@@ -129,7 +134,6 @@ describe("R1 reasoning_content round-trip", () => {
     for await (const _ev of loop.step("hello")) {
       /* drain */
     }
-    // Second user turn to send turn-1's assistant back.
     for await (const _ev of loop.step("next")) {
       /* drain */
     }
@@ -137,9 +141,6 @@ describe("R1 reasoning_content round-trip", () => {
     const turn2Messages = bodies[1]!.messages;
     const assistant = turn2Messages.find((m) => m.role === "assistant");
     expect(assistant).toBeDefined();
-    // Plain-text turn has no tool_calls, so we save prompt tokens by
-    // NOT echoing the reasoning back. DeepSeek only requires it when
-    // the turn had tool_calls.
-    expect(assistant?.reasoning_content).toBeUndefined();
+    expect(assistant?.reasoning_content).toBe("reasoning attached to a plain-text turn");
   });
 });
