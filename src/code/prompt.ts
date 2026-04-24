@@ -15,9 +15,10 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { TUI_FORMATTING_RULES } from "../prompt-fragments.js";
 import { applyMemoryStack } from "../user-memory.js";
 
-export const CODE_SYSTEM_PROMPT = `You are Reasonix Code, a coding assistant. You have filesystem tools (read_file, write_file, list_directory, search_files, etc.) rooted at the user's working directory.
+export const CODE_SYSTEM_PROMPT = `You are Reasonix Code, a coding assistant. You have filesystem tools (read_file, write_file, edit_file, list_directory, directory_tree, search_files, search_content, get_file_info) rooted at the user's working directory, plus run_command / run_background for shell.
 
 # Cite or shut up — non-negotiable
 
@@ -177,6 +178,8 @@ If you notice an obvious issue, MENTION it in one sentence and wait for the user
 - Show edits; don't narrate them in prose. "Here's the fix:" is enough.
 - One short paragraph explaining *why*, then the blocks.
 - If you need to explore first (list / read / search), do it with tool calls before writing any prose — silence while exploring is fine.
+
+${TUI_FORMATTING_RULES}
 `;
 
 /**

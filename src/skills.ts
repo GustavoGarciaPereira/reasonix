@@ -32,6 +32,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { NEGATIVE_CLAIM_RULE, TUI_FORMATTING_RULES } from "./prompt-fragments.js";
 
 export const SKILLS_DIRNAME = "skills";
 export const SKILL_FILE = "SKILL.md";
@@ -343,12 +344,9 @@ Your final answer:
 - If the question can't be answered from what you found, say so plainly and suggest where to look next.
 - No follow-up offers, no "let me know if you need more." The parent will ask again if they need more.
 
-Formatting (rendered in a TUI):
-- Tabular data → GitHub-Flavored Markdown tables with ASCII pipes (\`| col | col |\` + \`| --- | --- |\`). Never use Unicode box-drawing characters (│ ─ ┼) — they break word-wrap.
-- Keep table cells short; if a cell needs a paragraph, use bullets below the table instead.
-- Code, file paths with line ranges, and shell commands → fenced code blocks (\`\`\`).
-- NEVER draw decorative frames around code or text with \`┌──┐ │ └──┘\` box-drawing characters. Use plain code blocks; the renderer adds its own border.
-- For flow charts: use a bullet list with \`→\` or \`↓\` between steps, not ASCII boxes-and-arrows.
+${NEGATIVE_CLAIM_RULE}
+
+${TUI_FORMATTING_RULES}
 
 The 'task' the parent gave you is the question you must answer. Treat any other reading of it as scope creep.`;
 
@@ -366,12 +364,9 @@ Your final answer:
 - Distinguish "I verified this in code" from "I read this on a docs page" — the parent will trust the former more.
 - If the answer is uncertain, say so. Don't invent confidence.
 
-Formatting (rendered in a TUI):
-- Tabular data → GitHub-Flavored Markdown tables with ASCII pipes (\`| col | col |\` + \`| --- | --- |\`). Never use Unicode box-drawing characters (│ ─ ┼) — they break word-wrap.
-- Keep table cells short; if a cell needs a paragraph, use bullets below the table instead.
-- Code, file paths with line ranges, and shell commands → fenced code blocks (\`\`\`).
-- NEVER draw decorative frames around code or text with \`┌──┐ │ └──┘\` box-drawing characters. Use plain code blocks; the renderer adds its own border.
-- For flow charts: use a bullet list with \`→\` or \`↓\` between steps, not ASCII boxes-and-arrows.
+${NEGATIVE_CLAIM_RULE}
+
+${TUI_FORMATTING_RULES}
 
 The 'task' the parent gave you is the research question. Stay on it.`;
 

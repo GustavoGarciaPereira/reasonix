@@ -45,6 +45,7 @@ import { type DeepSeekClient, Usage } from "../client.js";
 import { CacheFirstLoop } from "../loop.js";
 import { ImmutablePrefix } from "../memory.js";
 import { applyProjectMemory } from "../project-memory.js";
+import { NEGATIVE_CLAIM_RULE, TUI_FORMATTING_RULES } from "../prompt-fragments.js";
 import { ToolRegistry } from "../tools.js";
 
 /**
@@ -191,12 +192,9 @@ Rules:
 - When you're done, your final assistant message is the only thing the parent will see — make it complete and self-contained. No follow-up offers, no questions, no "let me know if you need more."
 - Prefer one clear, distilled answer over a long log of what you tried.
 
-Formatting rules (the parent renders your reply in a TUI with a real markdown renderer):
-- For tabular data use GitHub-Flavored Markdown tables with ASCII pipes: \`| col | col |\` headers, \`| --- | --- |\` separator. NEVER draw tables with Unicode box-drawing characters (│ ─ ┼ ┌ ┐ └ ┘ ├ ┤). They look intentional but break terminal word-wrap and produce garbled output.
-- Keep table cells short — one short phrase per cell, not multi-line paragraphs. If a description doesn't fit in ~40 chars, use bullets below the table instead.
-- Use fenced code blocks (\`\`\`) for any code, file paths with line ranges, or shell commands.
-- NEVER draw decorative frames around content with \`┌──┐ │ └──┘\` box-drawing characters. The renderer handles code blocks and headings on its own — extra ASCII art adds noise without value and breaks at narrow terminal widths.
-- For flow charts and diagrams: use a markdown bullet list with \`→\` or \`↓\` between steps. Don't try to draw boxes-and-arrows in ASCII; it never survives word-wrap.`;
+${NEGATIVE_CLAIM_RULE}
+
+${TUI_FORMATTING_RULES}`;
 
 const DEFAULT_MAX_RESULT_CHARS = 8000;
 const DEFAULT_MAX_ITERS = 16;
