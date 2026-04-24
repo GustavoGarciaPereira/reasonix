@@ -43,6 +43,25 @@ const ARGS_COMPACT_THRESHOLD_TOKENS = 800;
  * through every future turn.
  */
 const TURN_END_RESULT_CAP_TOKENS = 3000;
+
+/**
+ * How many visible failure signals in a single turn before the
+ * remaining model calls auto-escalate to pro. Pitched conservatively:
+ * 1-2 retries are normal even for pro (indentation drift, stale context),
+ * 3+ means flash is genuinely stuck on this task and continuing at the
+ * cheap tier wastes tokens + user time. Announced in the UI when it
+ * fires — no silent upgrades.
+ */
+const FAILURE_ESCALATION_THRESHOLD = 3;
+/**
+ * Model used when the current turn auto-escalates (either from the
+ * `/pro` slash arming or the failure threshold). Hard-coded rather
+ * than plumbing a separate option because the semantics are exactly
+ * "use DeepSeek's stronger tier for this turn" — any deployment
+ * custom enough to need a different escalation model would already
+ * be constructing loops directly and can override at that layer.
+ */
+const ESCALATION_MODEL = "deepseek-v4-pro";
 import { AppendOnlyLog, type ImmutablePrefix, VolatileScratch } from "./memory.js";
 import { type RepairReport, ToolCallRepair } from "./repair/index.js";
 import { appendSessionMessage, loadSessionMessages, rewriteSession } from "./session.js";
@@ -268,11 +287,40 @@ export class CacheFirstLoop {
    */
   private _turnAbort: AbortController = new AbortController();
 
+  /**
+   * "Next turn should run on pro, regardless of this.model." Set by the
+   * `/pro` slash command; consumed at the next turn's start (flipping
+   * `_escalateThisTurn` on and self-clearing) so it's a fire-and-forget
+   * single-turn upgrade. Survives across multiple slash inputs so
+   * typing `/pro` and then hesitating a while before submitting a real
+   * message still applies.
+   */
+  private _proArmedForNextTurn = false;
+  /**
+   * Active for the current turn only — true means every model call
+   * this turn uses pro instead of `this.model`. Turned on by EITHER
+   * the pro-armed consumption OR the mid-turn auto-escalation
+   * threshold (see `_turnFailureCount`). Cleared at turn end.
+   */
+  private _escalateThisTurn = false;
+  /**
+   * Visible-failure count for the current turn. Incremented by tool
+   * dispatch paths when a result matches a known "flash is struggling"
+   * shape (SEARCH-not-found errors, scavenge / truncation / storm
+   * repair fires). Once it hits {@link FAILURE_ESCALATION_THRESHOLD},
+   * the remainder of the turn's model calls auto-upgrade to pro so
+   * the user doesn't watch flash retry the same edit 5 times.
+   */
+  private _turnFailureCount = 0;
+
   constructor(opts: CacheFirstLoopOptions) {
     this.client = opts.client;
     this.prefix = opts.prefix;
     this.tools = opts.tools ?? new ToolRegistry();
-    this.model = opts.model ?? "deepseek-v4-pro";
+    // Library fallback aligns with the CLI's new default: flash, not
+    // pro. Callers who want pro pass it explicitly — pro-by-default
+    // was ~12× more expensive than most deployments needed.
+    this.model = opts.model ?? "deepseek-v4-flash";
     this.reasoningEffort = opts.reasoningEffort ?? "max";
     // Iter cap is a safety net, not the primary stop condition. The
     // primary stop is the token-context guard inside step(): after
@@ -565,6 +613,78 @@ export class CacheFirstLoop {
     this.stream = this.branchEnabled ? false : this._streamPreference;
   }
 
+  /**
+   * Arm pro for the next turn (consumed at turn start). Called by
+   * `/pro`. Idempotent — repeated calls stay armed, `disarmPro()`
+   * clears. Separate from `/preset max` which persistently switches
+   * this.model; armed state is strictly single-turn.
+   */
+  armProForNextTurn(): void {
+    this._proArmedForNextTurn = true;
+  }
+  /** Cancel `/pro` arming before the next turn starts. */
+  disarmPro(): void {
+    this._proArmedForNextTurn = false;
+  }
+  /** UI surface — true while `/pro` is queued but hasn't fired yet. */
+  get proArmed(): boolean {
+    return this._proArmedForNextTurn;
+  }
+  /** UI surface — true while the current turn is running on pro (armed or auto-escalated). */
+  get escalatedThisTurn(): boolean {
+    return this._escalateThisTurn;
+  }
+
+  /**
+   * Model the current model call should use. Defaults to `this.model`;
+   * upgrades to {@link ESCALATION_MODEL} when the turn is armed for
+   * pro (via `/pro`) or has hit the failure-escalation threshold.
+   * Same thinking + effort policy applies regardless — pro defaults
+   * to thinking=enabled and effort=max, which the current turn wanted
+   * anyway when flash was struggling.
+   */
+  private modelForCurrentCall(): string {
+    return this._escalateThisTurn ? ESCALATION_MODEL : this.model;
+  }
+
+  /**
+   * Check whether a tool result string looks like a "flash struggled"
+   * signal and, if so, increment the turn's failure counter. Escalates
+   * the REST of the current turn to pro once the threshold is hit.
+   * Idempotent after escalation — further failures don't re-escalate,
+   * but the turn is already on pro so it doesn't matter.
+   *
+   * Return: `true` when this call tipped the turn into escalation
+   * mode (so the loop can surface a one-time warning to the user).
+   */
+  private noteToolFailureSignal(resultJson: string, repair?: RepairReport): boolean {
+    let bumped = false;
+    // edit_file / write_file SEARCH mismatch → `{"error":"Error: search text not found…"}`
+    if (resultJson.includes('"error"') && resultJson.includes("search text not found")) {
+      this._turnFailureCount += 1;
+      bumped = true;
+    }
+    // ToolCallRepair fires mean the MODEL's output was malformed
+    // (truncation, hallucinated tool markup, repeated same call).
+    // Each flavor counts as one failure signal.
+    if (repair) {
+      const repairs = repair.scavenged + repair.truncationsFixed + repair.stormsBroken;
+      if (repairs > 0) {
+        this._turnFailureCount += repairs;
+        bumped = true;
+      }
+    }
+    if (
+      bumped &&
+      !this._escalateThisTurn &&
+      this._turnFailureCount >= FAILURE_ESCALATION_THRESHOLD
+    ) {
+      this._escalateThisTurn = true;
+      return true;
+    }
+    return false;
+  }
+
   private buildMessages(pendingUser: string | null): ChatMessage[] {
     // Full tool_calls ↔ tool pairing validation. DeepSeek 400s on
     // both sides of this contract — unpaired assistant.tool_calls
@@ -638,11 +758,30 @@ export class CacheFirstLoop {
     // calls that are now legitimately on-task. The window repopulates
     // naturally as this turn's tool calls flow through.
     this.repair.resetStorm();
+    // Per-turn escalation state: reset both flags at turn start, then
+    // consume the /pro armed flag into `_escalateThisTurn` (so the
+    // armed intent is one-shot — next turn starts fresh on flash
+    // unless the user re-arms or mid-turn escalation triggers).
+    this._turnFailureCount = 0;
+    this._escalateThisTurn = false;
+    let armedConsumed = false;
+    if (this._proArmedForNextTurn) {
+      this._escalateThisTurn = true;
+      this._proArmedForNextTurn = false;
+      armedConsumed = true;
+    }
     // Fresh controller for this turn: the prior step's signal has
     // already fired (or stayed clean); either way we don't want its
     // state to bleed into the new turn.
     this._turnAbort = new AbortController();
     const signal = this._turnAbort.signal;
+    if (armedConsumed) {
+      yield {
+        turn: this._turn,
+        role: "warning",
+        content: "⇧ /pro armed — this turn runs on deepseek-v4-pro (one-shot · disarms after turn)",
+      };
+    }
     let pendingUser: string | null = userInput;
     const toolSpecs = this.prefix.tools();
     // 70% of the iter budget is the "you're getting close" threshold. We
@@ -793,14 +932,15 @@ export class CacheFirstLoop {
             }
           };
 
+          const callModel = this.modelForCurrentCall();
           const branchPromise = runBranches(
             this.client,
             {
-              model: this.model,
+              model: callModel,
               messages,
               tools: toolSpecs.length ? toolSpecs : undefined,
               signal,
-              thinking: thinkingModeForModel(this.model),
+              thinking: thinkingModeForModel(callModel),
               reasoningEffort: this.reasoningEffort,
             },
             {
@@ -863,12 +1003,13 @@ export class CacheFirstLoop {
           // user sees progress on long multi-tool turns instead of a
           // stagnant "building tool call" spinner.
           const readyIndices = new Set<number>();
+          const callModel = this.modelForCurrentCall();
           for await (const chunk of this.client.stream({
-            model: this.model,
+            model: callModel,
             messages,
             tools: toolSpecs.length ? toolSpecs : undefined,
             signal,
-            thinking: thinkingModeForModel(this.model),
+            thinking: thinkingModeForModel(callModel),
             reasoningEffort: this.reasoningEffort,
           })) {
             if (chunk.contentDelta) {
@@ -929,12 +1070,13 @@ export class CacheFirstLoop {
           }
           toolCalls = [...callBuf.values()];
         } else {
+          const callModel = this.modelForCurrentCall();
           const resp = await this.client.chat({
-            model: this.model,
+            model: callModel,
             messages,
             tools: toolSpecs.length ? toolSpecs : undefined,
             signal,
-            thinking: thinkingModeForModel(this.model),
+            thinking: thinkingModeForModel(callModel),
             reasoningEffort: this.reasoningEffort,
           });
           assistantContent = resp.content;
@@ -967,7 +1109,13 @@ export class CacheFirstLoop {
         return;
       }
 
-      const turnStats = this.stats.record(this._turn, this.model, usage ?? new Usage());
+      // Attribute under the actual model used (escalated → pro, else
+      // this.model) so cost/usage logs reflect reality.
+      const turnStats = this.stats.record(
+        this._turn,
+        this.modelForCurrentCall(),
+        usage ?? new Usage(),
+      );
 
       // Commit the user turn to the log only on success of the first round-trip.
       if (pendingUser !== null) {
@@ -1016,6 +1164,18 @@ export class CacheFirstLoop {
         repair: report,
         branch: branchSummary,
       };
+
+      // Cost-aware escalation: repair fires (scavenge / truncation /
+      // storm) are visible "model struggled" signals. Feed them into
+      // the turn failure counter — if we hit the threshold, the
+      // remainder of this turn's model calls use pro.
+      if (this.noteToolFailureSignal("", report)) {
+        yield {
+          turn: this._turn,
+          role: "warning",
+          content: `⇧ auto-escalating to ${ESCALATION_MODEL} for the rest of this turn — flash hit ${this._turnFailureCount} repair/error signals. Next turn falls back to ${this.model} unless /pro is armed.`,
+        };
+      }
 
       // Loud signal when the storm breaker caught a repeat pattern.
       // The `repair` field on assistant_final already carries the
@@ -1211,6 +1371,16 @@ export class CacheFirstLoop {
         // marker instead of the raw SEARCH/REPLACE payload. See
         // compactToolCallArgsAfterResponse for the trade-offs.
         this.compactToolCallArgsAfterResponse();
+        // Cost-aware escalation: check for "flash is struggling" shapes
+        // (SEARCH-not-found, etc). If threshold hits here, surface a
+        // one-time warning so the user knows the next call upgraded.
+        if (this.noteToolFailureSignal(result)) {
+          yield {
+            turn: this._turn,
+            role: "warning",
+            content: `⇧ auto-escalating to ${ESCALATION_MODEL} for the rest of this turn — flash hit ${this._turnFailureCount} edit failure(s). Next turn falls back to ${this.model} unless /pro is armed.`,
+          };
+        }
         yield {
           turn: this._turn,
           role: "tool",

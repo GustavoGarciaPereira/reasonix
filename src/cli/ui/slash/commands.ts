@@ -34,6 +34,12 @@ export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
     summary: "reasoning_effort cap — max is default (agent-class), high is cheaper/faster",
     argCompleter: ["max", "high"],
   },
+  {
+    cmd: "pro",
+    argsHint: "[off]",
+    summary: "arm v4-pro for the NEXT turn only (one-shot · auto-disarms after turn)",
+    argCompleter: ["off"],
+  },
   { cmd: "mcp", summary: "list MCP servers + tools attached to this session" },
   {
     cmd: "resource",

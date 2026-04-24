@@ -62,6 +62,7 @@ const help: SlashHandler = () => ({
     "  /status                  show current settings",
     "  /preset <fast|smart|max> one-tap presets — see below",
     "  /model <id>              deepseek-v4-flash or deepseek-v4-pro",
+    "  /pro [off]               arm v4-pro for NEXT turn only (one-shot, auto-disarms)",
     "  /harvest [on|off]        Pillar 2: structured plan-state extraction (OPT-IN — costs extra)",
     "  /branch <N|off>          run N parallel samples (N>=2) — MANUAL ONLY, N× cost",
     "  /effort <high|max>       reasoning_effort cap (max=full thinking, high=cheaper/faster)",

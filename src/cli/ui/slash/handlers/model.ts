@@ -148,6 +148,32 @@ const effort: SlashHandler = (args, loop) => {
   return { info: `reasoning_effort → ${raw} (persisted)` };
 };
 
+const pro: SlashHandler = (args, loop) => {
+  const arg = (args[0] ?? "").toLowerCase();
+  if (arg === "off" || arg === "cancel" || arg === "disarm") {
+    if (!loop.proArmed) {
+      return { info: "nothing armed — /pro with no args will arm pro for your next turn" };
+    }
+    loop.disarmPro();
+    return { info: "▸ /pro disarmed — next turn falls back to the current preset" };
+  }
+  if (arg && arg !== "on" && arg !== "arm") {
+    return {
+      info: "usage: /pro       arm pro for the next turn (one-shot, auto-disarms after)\n       /pro off  cancel armed state before the next turn",
+    };
+  }
+  loop.armProForNextTurn();
+  return {
+    info: `▸ /pro armed — your NEXT message runs on ${ESCALATION_MODEL_ID} regardless of preset. Auto-disarms after one turn. Use /preset max for a persistent switch.`,
+  };
+};
+
+// Kept in sync with loop.ts ESCALATION_MODEL — hard-coding rather than
+// importing it because loop.ts already exports enough surface, and this
+// string is user-facing (description strings stay verbatim even if the
+// internal constant renames).
+const ESCALATION_MODEL_ID = "deepseek-v4-pro";
+
 export const handlers: Record<string, SlashHandler> = {
   model,
   models,
@@ -155,4 +181,5 @@ export const handlers: Record<string, SlashHandler> = {
   preset,
   branch,
   effort,
+  pro,
 };
