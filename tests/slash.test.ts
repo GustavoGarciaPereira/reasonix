@@ -501,52 +501,6 @@ describe("handleSlash", () => {
     expect(r.info).toMatch(/\/tool/);
   });
 
-  describe("/edit", () => {
-    it("refuses outside code mode", () => {
-      const r = handleSlash("edit", ["src/foo.ts", "change", "x"], makeLoop(), {});
-      expect(r.info).toMatch(/only works in code mode/);
-      expect(r.resubmit).toBeUndefined();
-    });
-
-    it("shows usage when file path is missing", () => {
-      const r = handleSlash("edit", [], makeLoop(), { codeRoot: "/repo" });
-      expect(r.info).toMatch(/usage: \/edit/);
-      expect(r.resubmit).toBeUndefined();
-    });
-
-    it("shows usage when instruction is missing", () => {
-      const r = handleSlash("edit", ["src/foo.ts"], makeLoop(), { codeRoot: "/repo" });
-      expect(r.info).toMatch(/missing instruction/);
-      expect(r.resubmit).toBeUndefined();
-    });
-
-    it("resubmits as @file + strict SEARCH/REPLACE instruction", () => {
-      const r = handleSlash("edit", ["src/foo.ts", "fix", "the", "typo"], makeLoop(), {
-        codeRoot: "/repo",
-      });
-      expect(r.resubmit).toBeDefined();
-      expect(r.resubmit!).toContain("@src/foo.ts");
-      expect(r.resubmit!).toContain("fix the typo");
-      expect(r.resubmit!).toMatch(/SEARCH\/REPLACE/);
-      expect(r.resubmit!).toMatch(/ONLY/);
-    });
-
-    it("preserves multi-word instructions verbatim", () => {
-      const r = handleSlash(
-        "edit",
-        ["README.md", "add", "a", "section", "on", "installation"],
-        makeLoop(),
-        { codeRoot: "/repo" },
-      );
-      expect(r.resubmit!).toContain("add a section on installation");
-    });
-  });
-
-  it("/help mentions /edit", () => {
-    const r = handleSlash("help", [], makeLoop());
-    expect(r.info).toMatch(/\/edit/);
-  });
-
   describe("/keys", () => {
     it("lists the major keyboard shortcuts", () => {
       const r = handleSlash("keys", [], makeLoop());
@@ -577,8 +531,8 @@ describe("handleSlash", () => {
 
   describe("detectSlashArgContext", () => {
     it("returns null before the user commits to a slash name", () => {
-      expect(detectSlashArgContext("/ed")).toBeNull();
-      expect(detectSlashArgContext("/edit")).toBeNull();
+      expect(detectSlashArgContext("/pr")).toBeNull();
+      expect(detectSlashArgContext("/preset")).toBeNull();
     });
 
     it("returns null when the command doesn't exist", () => {
@@ -589,26 +543,14 @@ describe("handleSlash", () => {
       expect(detectSlashArgContext("just some text")).toBeNull();
     });
 
-    it("activates file picker for /edit in code mode", () => {
-      const ctx = detectSlashArgContext("/edit src/lo", true);
-      expect(ctx).not.toBeNull();
-      expect(ctx!.kind).toBe("picker");
-      expect(ctx!.spec.cmd).toBe("edit");
-      expect(ctx!.partial).toBe("src/lo");
-      // Offset is the char index where the partial starts in the buffer.
-      expect(ctx!.partialOffset).toBe("/edit ".length);
-    });
-
-    it("is hidden for /edit outside code mode (command is contextual)", () => {
-      expect(detectSlashArgContext("/edit src/foo", false)).toBeNull();
-    });
-
     it("activates enum picker for /preset", () => {
       const ctx = detectSlashArgContext("/preset fa");
       expect(ctx).not.toBeNull();
       expect(ctx!.kind).toBe("picker");
       expect(ctx!.spec.argCompleter).toEqual(["fast", "smart", "max"]);
       expect(ctx!.partial).toBe("fa");
+      // Offset is the char index where the partial starts in the buffer.
+      expect(ctx!.partialOffset).toBe("/preset ".length);
     });
 
     it("activates model picker for /model", () => {
@@ -625,15 +567,19 @@ describe("handleSlash", () => {
       expect(ctx!.spec.argCompleter).toEqual(["on", "off"]);
     });
 
+    it("hides /plan outside code mode (command is contextual)", () => {
+      expect(detectSlashArgContext("/plan on", false)).toBeNull();
+    });
+
     it("surfaces a hint-only row once the user types a space inside the partial", () => {
-      // "/edit src/foo.ts fix" — past the file arg, typing instruction.
-      const ctx = detectSlashArgContext("/edit src/foo.ts fix", true);
+      // "/preset fast foo" — typed past the one enum slot.
+      const ctx = detectSlashArgContext("/preset fast foo");
       expect(ctx).not.toBeNull();
       expect(ctx!.kind).toBe("hint");
     });
 
     it("returns picker with empty partial when the user just hit space", () => {
-      const ctx = detectSlashArgContext("/edit ", true);
+      const ctx = detectSlashArgContext("/preset ");
       expect(ctx).not.toBeNull();
       expect(ctx!.kind).toBe("picker");
       expect(ctx!.partial).toBe("");
@@ -645,6 +591,18 @@ describe("handleSlash", () => {
       expect(ctx).not.toBeNull();
       expect(ctx!.kind).toBe("hint");
       expect(ctx!.spec.cmd).toBe("commit");
+    });
+
+    it("still surfaces picker kind when partial exactly matches an enum value", () => {
+      // Detector itself is kind-only — it doesn't know whether the
+      // partial is a complete match. The App's slashArgMatches memo
+      // is responsible for hiding the picker on exact match so Enter
+      // submits; this test documents that the detector's contract is
+      // "we're in picker mode" regardless of match state.
+      const ctx = detectSlashArgContext("/preset smart");
+      expect(ctx).not.toBeNull();
+      expect(ctx!.kind).toBe("picker");
+      expect(ctx!.partial).toBe("smart");
     });
   });
 
@@ -675,7 +633,6 @@ describe("handleSlash", () => {
       "commit",
       "plan",
       "apply-plan",
-      "edit",
       "keys",
     ]) {
       expect(names, `registry missing /${required}`).toContain(required);

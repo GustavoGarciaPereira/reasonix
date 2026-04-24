@@ -393,25 +393,25 @@ export function App({
   const slashArgMatches = useMemo<readonly string[] | null>(() => {
     if (!slashArgContext || slashArgContext.kind !== "picker") return null;
     const completer = slashArgContext.spec.argCompleter;
-    if (completer === "file") {
-      return rankPickerCandidates(atFiles, slashArgContext.partial, {
-        limit: 40,
-        recentlyUsed: recentFilesRef.current,
-      });
+    const partial = slashArgContext.partial;
+    const needle = partial.toLowerCase();
+    // Once the partial is an EXACT match for a valid completion, hide
+    // the picker so Enter submits the command instead of re-picking
+    // the same value in an infinite loop. Case-insensitive — users
+    // may type `/preset FAST` and still mean the same thing.
+    if (Array.isArray(completer)) {
+      if (partial && completer.some((v) => v.toLowerCase() === needle)) return null;
+      if (!partial) return completer.slice();
+      return completer.filter((v) => v.toLowerCase().startsWith(needle));
     }
     if (completer === "models") {
       const all = models ?? [];
-      if (!slashArgContext.partial) return all.slice(0, 40);
-      const needle = slashArgContext.partial.toLowerCase();
+      if (partial && all.some((m) => m.toLowerCase() === needle)) return null;
+      if (!partial) return all.slice(0, 40);
       return all.filter((m) => m.toLowerCase().includes(needle)).slice(0, 40);
     }
-    if (Array.isArray(completer)) {
-      if (!slashArgContext.partial) return completer.slice();
-      const needle = slashArgContext.partial.toLowerCase();
-      return completer.filter((v) => v.toLowerCase().startsWith(needle));
-    }
     return null;
-  }, [slashArgContext, atFiles, models]);
+  }, [slashArgContext, models]);
   useEffect(() => {
     setSlashArgSelected((prev) => {
       if (!slashArgMatches || slashArgMatches.length === 0) return 0;
@@ -423,13 +423,10 @@ export function App({
     (chosen: string) => {
       if (!slashArgContext) return;
       const before = input.slice(0, slashArgContext.partialOffset);
-      // File picks end with a space so the user can keep typing the
-      // instruction (for `/edit <file> <instruction>`). Enum picks
-      // (preset / model / plan / branch / harvest) end with nothing
-      // since those commands don't take further args — the user just
-      // presses Enter to run.
-      const trailing = slashArgContext.spec.argCompleter === "file" ? " " : "";
-      setInput(`${before}${chosen}${trailing}`);
+      // No trailing space — enum picks (preset / model / plan / branch /
+      // harvest) take no further args, so the user presses Enter once
+      // more to run the command.
+      setInput(`${before}${chosen}`);
     },
     [slashArgContext, input],
   );
