@@ -750,6 +750,60 @@ describe("CacheFirstLoop — self-reported escalation via <<<NEEDS_PRO>>>", () =
     // Exactly one call; no retry.
     expect(seenModels).toEqual(["deepseek-v4-pro"]);
   });
+
+  it("surfaces the model's reason in the warning when marker carries one", async () => {
+    const { fetch } = modelCapturingFetch([
+      { content: "<<<NEEDS_PRO: cross-file refactor with circular imports>>>" },
+      { content: "Done on pro." },
+    ]);
+    const loop = new CacheFirstLoop({
+      client: new DeepSeekClient({ apiKey: "sk-test", fetch }),
+      prefix: new ImmutablePrefix({ system: "be brief" }),
+      model: "deepseek-v4-flash",
+      stream: false,
+    });
+    const events: { role: string; content?: string }[] = [];
+    for await (const ev of loop.step("refactor this")) {
+      events.push({ role: ev.role, content: ev.content });
+    }
+    const warning = events.find((e) => e.role === "warning" && /escalat/i.test(e.content ?? ""));
+    expect(warning).toBeDefined();
+    expect(warning?.content).toContain("cross-file refactor with circular imports");
+  });
+
+  it("treats an empty reason payload the same as the bare marker", async () => {
+    const { fetch, seenModels } = modelCapturingFetch([
+      { content: "<<<NEEDS_PRO: >>>" }, // empty reason
+      { content: "Done on pro." },
+    ]);
+    const loop = new CacheFirstLoop({
+      client: new DeepSeekClient({ apiKey: "sk-test", fetch }),
+      prefix: new ImmutablePrefix({ system: "be brief" }),
+      model: "deepseek-v4-flash",
+      stream: false,
+    });
+    for await (const _ev of loop.step("x")) {
+      /* drain */
+    }
+    expect(seenModels).toEqual(["deepseek-v4-flash", "deepseek-v4-pro"]);
+  });
+
+  it("does not match a malformed marker (no closing >>>)", async () => {
+    const { fetch, seenModels } = modelCapturingFetch([
+      { content: "<<<NEEDS_PRO: this looks like a marker but never closes" },
+    ]);
+    const loop = new CacheFirstLoop({
+      client: new DeepSeekClient({ apiKey: "sk-test", fetch }),
+      prefix: new ImmutablePrefix({ system: "be brief" }),
+      model: "deepseek-v4-flash",
+      stream: false,
+    });
+    for await (const _ev of loop.step("x")) {
+      /* drain */
+    }
+    // No retry — the marker never closed, so the content streams as-is.
+    expect(seenModels).toEqual(["deepseek-v4-flash"]);
+  });
 });
 
 describe("CacheFirstLoop (streaming) — tool_call_delta emission", () => {

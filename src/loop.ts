@@ -72,11 +72,20 @@ const ESCALATION_MODEL = "deepseek-v4-pro";
  * users off the pro tier while giving flash a self-aware escape
  * hatch for tasks it would otherwise botch.
  */
-const NEEDS_PRO_MARKER = "<<<NEEDS_PRO>>>";
+/**
+ * Two accepted forms:
+ *   - `<<<NEEDS_PRO>>>`              — bare marker, no reason
+ *   - `<<<NEEDS_PRO: <reason text>>>>` — model includes a one-sentence
+ *     rationale that gets surfaced in the escalation warning. Reason
+ *     can be empty (treated as bare); leading/trailing whitespace is
+ *     trimmed.
+ */
+const NEEDS_PRO_MARKER_PREFIX = "<<<NEEDS_PRO";
+const NEEDS_PRO_MARKER_RE = /^<<<NEEDS_PRO(?::\s*([^>]*))?>>>/;
 /** Max chars of assistant content we buffer before flushing in the
- *  streaming path — enough to distinguish a literal marker start
- *  from real content that merely happens to contain angle-brackets. */
-const NEEDS_PRO_BUFFER_CHARS = 80;
+ *  streaming path. Bumped from 80 → 256 to leave room for the
+ *  optional reason text without prematurely flushing it. */
+const NEEDS_PRO_BUFFER_CHARS = 256;
 import { AppendOnlyLog, type ImmutablePrefix, VolatileScratch } from "./memory.js";
 import { type RepairReport, ToolCallRepair } from "./repair/index.js";
 import { appendSessionMessage, loadSessionMessages, rewriteSession } from "./session.js";
@@ -327,6 +336,14 @@ export class CacheFirstLoop {
    * the user doesn't watch flash retry the same edit 5 times.
    */
   private _turnFailureCount = 0;
+  /**
+   * Per-type breakdown of failure signals counted toward the turn's
+   * auto-escalation threshold. Surfaced in the warning when the
+   * threshold trips so the user sees what kind of trouble flash
+   * actually hit ("3× search-mismatch, 2× truncated") rather than
+   * just a bare count. Reset alongside _turnFailureCount.
+   */
+  private _turnFailureTypes: Record<string, number> = {};
 
   constructor(opts: CacheFirstLoopOptions) {
     this.client = opts.client;
@@ -663,15 +680,46 @@ export class CacheFirstLoop {
   }
 
   /**
-   * True when the assistant's content is a self-reported escalation
-   * request. Only the FIRST line matters — the model is instructed
-   * to emit the marker as the first output token if at all. Matching
-   * anywhere else in the text is a normal content reference (e.g.
-   * the user asked about the marker itself, or prose that happens
-   * to contain angle-brackets).
+   * Parse the escalation marker out of the model's leading content.
+   * Returns `{ matched: true, reason? }` for both bare and reason-
+   * carrying forms. Only the FIRST line matters — the model is
+   * instructed to emit the marker as the first output token if at
+   * all. Matches anywhere else in the text are normal content
+   * references (e.g. the user asked about the marker itself).
    */
+  private parseEscalationMarker(content: string): { matched: boolean; reason?: string } {
+    const m = NEEDS_PRO_MARKER_RE.exec(content.trimStart());
+    if (!m) return { matched: false };
+    const reason = m[1]?.trim();
+    return { matched: true, reason: reason || undefined };
+  }
+
+  /** Convenience boolean — same gate the streaming path used to call. */
   private isEscalationRequest(content: string): boolean {
-    return content.trimStart().startsWith(NEEDS_PRO_MARKER);
+    return this.parseEscalationMarker(content).matched;
+  }
+
+  /**
+   * Could `buf` STILL plausibly become the full marker as more chunks
+   * arrive? Drives the streaming buffer's flush decision: while this
+   * is true we keep accumulating; once it's false (or the buffer
+   * exceeds the byte limit) we flush so the user isn't staring at a
+   * delayed display for arbitrary content that just happens to start
+   * with `<`.
+   */
+  private looksLikePartialEscalationMarker(buf: string): boolean {
+    const t = buf.trimStart();
+    if (t.length === 0) return true;
+    if (t.length <= NEEDS_PRO_MARKER_PREFIX.length) {
+      return NEEDS_PRO_MARKER_PREFIX.startsWith(t);
+    }
+    if (!t.startsWith(NEEDS_PRO_MARKER_PREFIX)) return false;
+    const rest = t.slice(NEEDS_PRO_MARKER_PREFIX.length);
+    // After `<<<NEEDS_PRO`, valid next chars are `>` (closing the
+    // marker) or `:` (start of the reason). Anything else means this
+    // was real content that happened to share a prefix.
+    if (rest[0] !== ">" && rest[0] !== ":") return false;
+    return true;
   }
 
   /**
@@ -686,20 +734,24 @@ export class CacheFirstLoop {
    */
   private noteToolFailureSignal(resultJson: string, repair?: RepairReport): boolean {
     let bumped = false;
+    const bump = (kind: string, by = 1): void => {
+      this._turnFailureCount += by;
+      this._turnFailureTypes[kind] = (this._turnFailureTypes[kind] ?? 0) + by;
+      bumped = true;
+    };
     // edit_file / write_file SEARCH mismatch → `{"error":"Error: search text not found…"}`
     if (resultJson.includes('"error"') && resultJson.includes("search text not found")) {
-      this._turnFailureCount += 1;
-      bumped = true;
+      bump("search-mismatch");
     }
     // ToolCallRepair fires mean the MODEL's output was malformed
     // (truncation, hallucinated tool markup, repeated same call).
-    // Each flavor counts as one failure signal.
+    // Each flavor counts as one failure signal AND gets its own tag
+    // in the breakdown so the warning can say "3× truncated" instead
+    // of an opaque "3 repair signals".
     if (repair) {
-      const repairs = repair.scavenged + repair.truncationsFixed + repair.stormsBroken;
-      if (repairs > 0) {
-        this._turnFailureCount += repairs;
-        bumped = true;
-      }
+      if (repair.scavenged > 0) bump("scavenged", repair.scavenged);
+      if (repair.truncationsFixed > 0) bump("truncated", repair.truncationsFixed);
+      if (repair.stormsBroken > 0) bump("storm-broken", repair.stormsBroken);
     }
     if (
       bumped &&
@@ -710,6 +762,19 @@ export class CacheFirstLoop {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Render `_turnFailureTypes` as a comma-separated breakdown like
+   * "2× search-mismatch, 1× truncated" for the auto-escalation
+   * warning. Empty if no types have been recorded yet (defensive —
+   * the warning sites only call this after a bump).
+   */
+  private formatFailureBreakdown(): string {
+    const parts = Object.entries(this._turnFailureTypes)
+      .filter(([, n]) => n > 0)
+      .map(([kind, n]) => `${n}× ${kind}`);
+    return parts.length > 0 ? parts.join(", ") : `${this._turnFailureCount} repair/error signal(s)`;
   }
 
   private buildMessages(pendingUser: string | null): ChatMessage[] {
@@ -790,6 +855,7 @@ export class CacheFirstLoop {
     // armed intent is one-shot — next turn starts fresh on flash
     // unless the user re-arms or mid-turn escalation triggers).
     this._turnFailureCount = 0;
+    this._turnFailureTypes = {};
     this._escalateThisTurn = false;
     let armedConsumed = false;
     if (this._proArmedForNextTurn) {
@@ -1058,10 +1124,11 @@ export class CacheFirstLoop {
                   break;
                 }
                 // Flush once we have enough content to rule out the
-                // marker (past one line or past the look-ahead window).
+                // marker (clearly not a partial match anymore, or past
+                // the look-ahead window).
                 if (
                   escalationBuf.length >= NEEDS_PRO_BUFFER_CHARS ||
-                  escalationBuf.includes("\n")
+                  !this.looksLikePartialEscalationMarker(escalationBuf)
                 ) {
                   escalationBufFlushed = true;
                   yield {
@@ -1194,11 +1261,13 @@ export class CacheFirstLoop {
         this.modelForCurrentCall() !== ESCALATION_MODEL &&
         this.isEscalationRequest(assistantContent)
       ) {
+        const { reason } = this.parseEscalationMarker(assistantContent);
         this._escalateThisTurn = true;
+        const reasonSuffix = reason ? ` — ${reason}` : "";
         yield {
           turn: this._turn,
           role: "warning",
-          content: `⇧ flash requested escalation — retrying this turn on ${ESCALATION_MODEL}`,
+          content: `⇧ flash requested escalation — retrying this turn on ${ESCALATION_MODEL}${reasonSuffix}`,
         };
         // Reset per-iter state. We don't record stats for the rejected
         // flash call (cost is small — a ~20-token lead-in that we broke
@@ -1280,7 +1349,7 @@ export class CacheFirstLoop {
         yield {
           turn: this._turn,
           role: "warning",
-          content: `⇧ auto-escalating to ${ESCALATION_MODEL} for the rest of this turn — flash hit ${this._turnFailureCount} repair/error signals. Next turn falls back to ${this.model} unless /pro is armed.`,
+          content: `⇧ auto-escalating to ${ESCALATION_MODEL} for the rest of this turn — flash hit ${this.formatFailureBreakdown()}. Next turn falls back to ${this.model} unless /pro is armed.`,
         };
       }
 
@@ -1485,7 +1554,7 @@ export class CacheFirstLoop {
           yield {
             turn: this._turn,
             role: "warning",
-            content: `⇧ auto-escalating to ${ESCALATION_MODEL} for the rest of this turn — flash hit ${this._turnFailureCount} edit failure(s). Next turn falls back to ${this.model} unless /pro is armed.`,
+            content: `⇧ auto-escalating to ${ESCALATION_MODEL} for the rest of this turn — flash hit ${this.formatFailureBreakdown()}. Next turn falls back to ${this.model} unless /pro is armed.`,
           };
         }
         yield {
