@@ -3,7 +3,9 @@ import React from "react";
 import { type TypedPlanState, isPlanStateEmpty } from "../../harvest.js";
 import type { BranchProgress, BranchSummary } from "../../loop.js";
 import type { TurnStats } from "../../telemetry.js";
+import type { PlanStep } from "../../tools/plan.js";
 import { PlanStateBlock } from "./PlanStateBlock.js";
+import { PlanStepList } from "./PlanStepList.js";
 import { Markdown } from "./markdown.js";
 import { useElapsedSeconds, useTick } from "./ticker.js";
 import { formatDuration, summarizeToolResult } from "./tool-summary.js";
@@ -29,7 +31,14 @@ export type DisplayRole =
    * the user can glance at the scrollback and see how far along the
    * execution is without scrolling through every tool call.
    */
-  | "step-progress";
+  | "step-progress"
+  /**
+   * Pushed once at session startup when an existing plan was loaded
+   * from disk. Renders as a bordered box with the step list and
+   * progress so the user sees exactly where they left off — much
+   * more useful than the bare "2/5 done" info line it replaced.
+   */
+  | "plan-resumed";
 
 export interface DisplayEvent {
   id: string;
@@ -63,6 +72,17 @@ export interface DisplayEvent {
     completed: number;
     total: number;
     notes?: string;
+  };
+  /**
+   * Populated on `plan-resumed` rows: the structured plan loaded from
+   * disk + the set of step ids the user had already completed +
+   * a relative-time hint for the header. Rendered as a bordered
+   * snapshot so the user picks back up immediately.
+   */
+  resumedPlan?: {
+    steps: PlanStep[];
+    completedStepIds: string[];
+    relativeTime: string;
   };
   /**
    * Render a thin horizontal rule above this event. Used to mark
@@ -256,6 +276,36 @@ export const EventRow = React.memo(function EventRow({
             </Text>
           </Box>
         ) : null}
+      </Box>
+    );
+  }
+  if (event.role === "plan-resumed") {
+    const rp = event.resumedPlan;
+    if (!rp || rp.steps.length === 0) return null;
+    const total = rp.steps.length;
+    const done = rp.completedStepIds.length;
+    const completedSet = new Set(rp.completedStepIds);
+    const statuses = new Map(
+      rp.steps.map((s) => [
+        s.id,
+        completedSet.has(s.id) ? ("done" as const) : ("pending" as const),
+      ]),
+    );
+    // Focus the first pending step so the user immediately sees where
+    // execution will resume from. If the plan is fully done, no focus
+    // (the picker pattern uses › for "next up").
+    const nextStep = rp.steps.find((s) => !completedSet.has(s.id));
+    return (
+      <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginY={1}>
+        <Box>
+          <Text bold color="cyan">
+            ▸ resumed plan
+          </Text>
+          <Text dimColor>{`  ${done}/${total} done · last touched ${rp.relativeTime}`}</Text>
+        </Box>
+        <Box marginTop={1} flexDirection="column">
+          <PlanStepList steps={rp.steps} statuses={statuses} focusStepId={nextStep?.id} />
+        </Box>
       </Box>
     );
   }

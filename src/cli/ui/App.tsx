@@ -622,15 +622,18 @@ export function App({
       if (restoredPlan && restoredPlan.steps.length > 0) {
         planStepsRef.current = restoredPlan.steps;
         completedStepIdsRef.current = new Set(restoredPlan.completedStepIds);
-        const total = restoredPlan.steps.length;
-        const done = completedStepIdsRef.current.size;
         const when = relativeTime(restoredPlan.updatedAt);
         setHistorical((prev) => [
           ...prev,
           {
             id: `sys-plan-${Date.now()}`,
-            role: "info",
-            text: `▸ resumed plan: ${done}/${total} step${total === 1 ? "" : "s"} done · last touched ${when}`,
+            role: "plan-resumed",
+            text: "",
+            resumedPlan: {
+              steps: restoredPlan.steps,
+              completedStepIds: restoredPlan.completedStepIds,
+              relativeTime: when,
+            },
           },
         ]);
       }
