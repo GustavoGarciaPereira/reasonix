@@ -11,6 +11,7 @@
 
 import { Box, Text, useInput } from "ink";
 import React, { useState } from "react";
+import { recoverCsiTail } from "./key-normalize.js";
 
 export interface SelectItem<V extends string = string> {
   /** Stable identifier — returned to caller on submit. */
@@ -50,7 +51,9 @@ export function SingleSelect<V extends string>({
   );
   const [index, setIndex] = useState(initialIndex === -1 ? 0 : initialIndex);
 
-  useInput((_input, key) => {
+  useInput((rawInput, rawKey) => {
+    const recovered = recoverCsiTail(rawInput, rawKey);
+    const key = recovered ? { ...rawKey, ...recovered } : rawKey;
     if (key.upArrow) {
       setIndex((i) => findNextEnabled(items, i, -1));
     } else if (key.downArrow) {
@@ -104,7 +107,10 @@ export function MultiSelect<V extends string>({
   });
   const [selected, setSelected] = useState<Set<V>>(new Set(initialSelected));
 
-  useInput((input, key) => {
+  useInput((rawInput, rawKey) => {
+    const recovered = recoverCsiTail(rawInput, rawKey);
+    const input = recovered ? "" : rawInput;
+    const key = recovered ? { ...rawKey, ...recovered } : rawKey;
     if (key.upArrow) {
       setIndex((i) => findNextEnabled(items, i, -1));
     } else if (key.downArrow) {

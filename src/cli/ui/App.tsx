@@ -57,6 +57,7 @@ import { SlashSuggestions } from "./SlashSuggestions.js";
 import { StatsPanel } from "./StatsPanel.js";
 import { detectBangCommand, formatBangUserMessage } from "./bang.js";
 import { describeRepair, formatEditResults, formatPendingPreview } from "./edit-history.js";
+import { recoverCsiTail } from "./key-normalize.js";
 import { handleMcpBrowseSlash } from "./mcp-browse.js";
 import { formatLongPaste } from "./paste-collapse.js";
 import { type McpServerSummary, handleSlash, parseSlash, suggestSlashCommands } from "./slash.js";
@@ -707,7 +708,15 @@ export function App({
   // Also handles ↑/↓ shell-style history while idle. We don't use
   // ink-text-input's (absent) history support; parent-level useInput
   // is simpler and lets us own the cursor semantics.
-  useInput((chKey, key) => {
+  useInput((rawInput, rawKey) => {
+    // CSI recovery — same boundary that PromptInput uses. On Windows
+    // ConPTY, `\x1b[Z` (Shift+Tab) and `[A`-style arrow tails arrive
+    // with the leading ESC eaten; without recovery the structured
+    // flags Ink populates would miss them and the global hotkey
+    // bindings below would silently ignore the keystroke.
+    const recovered = recoverCsiTail(rawInput, rawKey);
+    const chKey = recovered ? "" : rawInput;
+    const key = recovered ? { ...rawKey, ...recovered } : rawKey;
     if (key.escape && busy) {
       if (abortedThisTurn.current) return;
       abortedThisTurn.current = true;

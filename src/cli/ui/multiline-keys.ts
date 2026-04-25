@@ -19,6 +19,12 @@
  *   - Parent owns Tab, Esc, PageUp/Down (slash-complete, abort,
  *     unused). Arrow keys are split: empty buffer → parent (history
  *     recall); non-empty → child (cursor movement).
+ *
+ * CSI recovery is delegated to `key-normalize.ts` — see there for
+ * the rationale. Every event flows through `recoverCsiTail` first,
+ * which is the single source of truth for the Windows ConPTY case
+ * (parse-keypress eats the leading `\x1b` and routes the bare
+ * `[A`/`[C`/`[201~`/etc. through useInput as plain text).
  */
 
 export interface MultilineKey {
@@ -67,45 +73,22 @@ export interface MultilineAction {
   pasteRequest?: { content: string };
 }
 
+import { recoverCsiTail, stripCsiFragments } from "./key-normalize.js";
+
 const BACKSLASH_SUFFIX = /\\$/;
 
 const NOOP: MultilineAction = { next: null, cursor: null, submit: false };
-
-function rewriteRawArrowEscape(key: MultilineKey): MultilineKey {
-  if (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow) return key;
-  // Full CSI sequences — terminals that pass `\x1b` through to Ink's
-  // useInput intact (most macOS / Linux setups).
-  if (key.input === "\x1b[A") return { ...key, upArrow: true, input: "" };
-  if (key.input === "\x1b[B") return { ...key, downArrow: true, input: "" };
-  if (key.input === "\x1b[C") return { ...key, rightArrow: true, input: "" };
-  if (key.input === "\x1b[D") return { ...key, leftArrow: true, input: "" };
-  // ESC-stripped fallbacks — Windows PowerShell + ConPTY routes the
-  // leading `\x1b` of a CSI through Ink's parse-keypress, which
-  // consumes it. The remaining `[A` / `[B` / `[C` / `[D` lands in
-  // `input` as plain text. Without these fallbacks, pressing the
-  // arrow key on those terminals inserts the literal `[C` into the
-  // user's prompt buffer instead of moving the cursor — which is
-  // exactly the "right arrow can't cross newline boundary" symptom
-  // (the keystroke wasn't moving anything; it was typing characters).
-  if (key.input === "[A") return { ...key, upArrow: true, input: "" };
-  if (key.input === "[B") return { ...key, downArrow: true, input: "" };
-  if (key.input === "[C") return { ...key, rightArrow: true, input: "" };
-  if (key.input === "[D") return { ...key, leftArrow: true, input: "" };
-  return key;
-}
 
 export function processMultilineKey(
   value: string,
   cursor: number,
   keyIn: MultilineKey,
 ): MultilineAction {
-  // Raw-escape fallback for terminals (some Windows configurations —
-  // cmd.exe, older winpty) that don't set `key.upArrow` / etc. on
-  // arrow-key press and instead leak the raw ANSI CSI sequence into
-  // `input`. Without this, `\x1b[A` lands on the "printable" branch
-  // below and the user sees literal escape bytes inserted into their
-  // buffer. Rewrite the event into the structured key here.
-  const key: MultilineKey = rewriteRawArrowEscape(keyIn);
+  // CSI recovery — bare `[A` / `[C` / `[Z` / `[5~` / etc. that
+  // Windows ConPTY leaves in `input` after parse-keypress eats the
+  // leading `\x1b`. See key-normalize.ts for the long version.
+  const recovered = recoverCsiTail(keyIn.input, keyIn);
+  const key: MultilineKey = recovered ? { ...keyIn, ...recovered, input: "" } : keyIn;
 
   // Parent-owned keys: Tab (slash-complete), Esc (abort).
   if (key.tab || key.escape) {
@@ -190,15 +173,10 @@ export function processMultilineKey(
   // the content. Pastes always insert; Enter only submits typed
   // content. We normalize \r\n and bare \r to \n so mixed-line-
   // ending pastes (Windows clipboard, web copy) land cleanly.
-  // Strip both the full marker (`\x1b[200~`) and the ESC-stripped
-  // fallback (`[200~`) — the latter shows up on Windows PowerShell +
-  // ConPTY where Ink's parse-keypress eats the leading ESC and routes
-  // the rest into `input` as plain text.
-  const stripped = key.input
-    .replaceAll("\u001b[200~", "")
-    .replaceAll("\u001b[201~", "")
-    .replaceAll("[200~", "")
-    .replaceAll("[201~", "");
+  // Strip every recognised CSI fragment (paste markers, arrow tails,
+  // etc.) defensively — if any leaked past structured-key recovery
+  // they shouldn't get inserted into the buffer as text.
+  const stripped = stripCsiFragments(key.input);
   // Paste = newline-containing input with MORE than just the newline
   // itself. A bare "\n" is Ctrl+J / one-keystroke newline (handled
   // below); only multi-char input wrapped around a newline is a real
