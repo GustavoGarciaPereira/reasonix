@@ -8,8 +8,9 @@ const think: SlashHandler = (_args, loop) => {
   if (!raw || !raw.trim()) {
     return {
       info:
-        "no reasoning cached. `/think` shows the full R1 thought for the most recent turn — " +
-        "only `deepseek-reasoner` produces it, and only once the turn completes.",
+        "no reasoning cached. `/think` shows the full thinking-mode thought for the most recent " +
+        "turn — only thinking-mode models (deepseek-v4-flash / -v4-pro / -reasoner) produce it, " +
+        "and only once the turn completes.",
     };
   }
   return { info: `↳ full thinking (${raw.length} chars):\n\n${raw.trim()}` };

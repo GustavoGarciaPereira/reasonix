@@ -178,7 +178,7 @@ export interface SubagentToolOptions {
   defaultSystem?: string;
   /** Project root for `applyProjectMemory` lookup. Omit in chat mode. */
   projectRoot?: string;
-  /** Default model. `deepseek-v4-pro` by default. */
+  /** Default model. `deepseek-v4-flash` by default (see DEFAULT_SUBAGENT_MODEL). */
   defaultModel?: string;
   /** Iteration ceiling. Lower than the parent (16 by default). */
   maxToolIters?: number;
@@ -440,9 +440,9 @@ export function registerSubagentTool(
         },
         model: {
           type: "string",
-          enum: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"],
+          enum: ["deepseek-v4-flash", "deepseek-v4-pro"],
           description:
-            "Which DeepSeek model the subagent runs on. Default is 'deepseek-v4-pro' — the strongest model, best for complex subtasks. Override to 'deepseek-v4-flash' (or the legacy 'deepseek-chat' / 'deepseek-reasoner' aliases, which route to flash non-thinking / thinking modes) when the subtask is simple enough that flash's quality suffices — flash is roughly 12× cheaper.",
+            "Which DeepSeek model the subagent runs on. Default is 'deepseek-v4-flash' — cheap and fast, fine for explore/research-style subtasks. Override to 'deepseek-v4-pro' (~12× more expensive) when the subtask genuinely needs the stronger model: cross-file architecture, subtle bug hunts, anything where flash has empirically underperformed.",
         },
       },
       required: ["task"],

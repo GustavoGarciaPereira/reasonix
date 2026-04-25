@@ -8,7 +8,7 @@ const model: SlashHandler = (args, loop, ctx) => {
     const hint =
       known && known.length > 0
         ? known.join(" | ")
-        : "try deepseek-chat or deepseek-reasoner — run /models to fetch the live list";
+        : "try deepseek-v4-flash or deepseek-v4-pro — run /models to fetch the live list";
     return { info: `usage: /model <id>   (${hint})` };
   }
   loop.configure({ model: id });
