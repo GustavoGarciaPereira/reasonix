@@ -99,6 +99,29 @@ describe("summarizeToolResult — known tools", () => {
     expect(out.isError).toBe(true);
     expect(out.summary).toMatch(/exit 1/);
   });
+
+  it("write_file: shows wrote line count + size", () => {
+    const out = summarizeToolResult("write_file", "alpha\nbeta\ngamma\n");
+    expect(out.isError).toBe(false);
+    expect(out.summary).toMatch(/wrote/);
+    expect(out.summary).toMatch(/4 lines/);
+  });
+
+  it("MCP-bridged tools pick up the same summary via suffix match", () => {
+    // `filesystem_read_file` should hit the read_file branch.
+    const out = summarizeToolResult(
+      "filesystem_read_file",
+      "import { foo } from 'bar';\nexport function baz() {}\n",
+    );
+    expect(out.summary).toMatch(/lines/);
+    expect(out.summary).toMatch(/import.*foo/);
+  });
+
+  it("suffix match doesn't false-trigger on non-underscore prefixes", () => {
+    // `myread_file` (no underscore separator) should NOT match read_file.
+    const out = summarizeToolResult("myread_file", "anything");
+    expect(out.summary).not.toMatch(/lines/);
+  });
 });
 
 describe("formatDuration", () => {

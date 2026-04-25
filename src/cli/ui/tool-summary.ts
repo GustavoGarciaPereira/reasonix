@@ -123,9 +123,14 @@ function summarizeStructured(content: string): ToolSummary | null {
  * Per-tool-name overrides for cases where a smarter summary is cheap
  * to compute. Returning null means "fall through to the generic
  * summary path."
+ *
+ * Suffix-match is on purpose: MCP-bridged tools come in prefixed
+ * (`filesystem_read_file`, `git_search_files`) and we want them to
+ * pick up the same specialized summary as the bare local name.
  */
 function summarizeKnownTool(toolName: string, content: string): ToolSummary | null {
-  if (toolName === "read_file") {
+  const hasSuffix = (s: string) => toolName === s || toolName.endsWith(`_${s}`);
+  if (hasSuffix("read_file")) {
     const lines = formatLineCount(content);
     const bytes = formatBytes(content.length);
     const head = clip(
@@ -137,11 +142,11 @@ function summarizeKnownTool(toolName: string, content: string): ToolSummary | nu
       isError: false,
     };
   }
-  if (toolName === "list_directory" || toolName === "directory_tree") {
+  if (hasSuffix("list_directory") || hasSuffix("directory_tree")) {
     const entries = content.split(/\r?\n/).filter((l) => l.trim()).length;
     return { summary: `${entries} entr${entries === 1 ? "y" : "ies"}`, isError: false };
   }
-  if (toolName === "search_files" || toolName === "search_content") {
+  if (hasSuffix("search_files") || hasSuffix("search_content")) {
     const matches = content.split(/\r?\n/).filter((l) => l.trim()).length;
     if (matches === 0) return { summary: "no matches", isError: false };
     const first = firstNonEmptyLine(content);
@@ -150,7 +155,12 @@ function summarizeKnownTool(toolName: string, content: string): ToolSummary | nu
       isError: false,
     };
   }
-  if (toolName === "run_command" || toolName === "run_background") {
+  if (hasSuffix("write_file")) {
+    const lines = formatLineCount(content);
+    const bytes = formatBytes(content.length);
+    return { summary: `wrote ${lines} · ${bytes}`, isError: false };
+  }
+  if (hasSuffix("run_command") || hasSuffix("run_background")) {
     // Native shell tools prepend "exit 0:" / "exit N:" or the result
     // already mentions exit code. Try to surface it.
     const exitMatch = content.match(/exit (?:code )?(-?\d+)/i);
