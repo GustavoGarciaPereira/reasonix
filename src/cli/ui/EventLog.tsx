@@ -305,11 +305,11 @@ export const EventRow = React.memo(function EventRow({
   if (event.role === "error") {
     return (
       <Box marginTop={1}>
-        <RoleGlyph glyph={ROLE_GLYPH.error} color="red" />
-        <Text color="red">
-          {"  "}
-          {indentContinuationLines(event.text)}
+        <Text backgroundColor="#f87171" color="black" bold>
+          {" ✦ ERROR "}
         </Text>
+        <Text>{"  "}</Text>
+        <Text color="#f87171">{indentContinuationLines(event.text)}</Text>
       </Box>
     );
   }
@@ -352,16 +352,24 @@ export const EventRow = React.memo(function EventRow({
   }
   if (event.role === "step-progress") {
     const sp = event.stepProgress;
-    const counter = sp && sp.total > 0 ? `  (${sp.completed}/${sp.total})` : "";
+    const counter = sp && sp.total > 0 ? `${sp.completed}/${sp.total}` : "";
     const label = sp?.title ? `${sp.stepId} · ${sp.title}` : (sp?.stepId ?? "");
     return (
       <Box flexDirection="column" marginTop={1}>
         <Box>
-          <Text color="green" bold>
-            ✓
+          <Text backgroundColor="#4ade80" color="black" bold>
+            {" ✓ STEP "}
           </Text>
-          <Text color="green">{`  ${label}`}</Text>
-          <Text dimColor>{counter}</Text>
+          {counter ? (
+            <>
+              <Text>{"  "}</Text>
+              <Text color="#4ade80" bold>
+                {counter}
+              </Text>
+            </>
+          ) : null}
+          <Text>{"  "}</Text>
+          <Text color="#86efac">{label}</Text>
         </Box>
         {event.text ? (
           <Box paddingLeft={2}>
@@ -370,7 +378,7 @@ export const EventRow = React.memo(function EventRow({
         ) : null}
         {sp?.notes ? (
           <Box paddingLeft={2}>
-            <Text color="yellow" dimColor>
+            <Text color="#fbbf24" dimColor>
               {`note: ${sp.notes}`}
             </Text>
           </Box>
@@ -391,24 +399,25 @@ export const EventRow = React.memo(function EventRow({
       ]),
     );
     // Focus the first pending step so the user immediately sees where
-    // execution will resume from. If the plan is fully done, no focus
-    // (the picker pattern uses › for "next up").
+    // execution will resume from. If the plan is fully done, no focus.
     const nextStep = rp.steps.find((s) => !completedSet.has(s.id));
     return (
       <Box flexDirection="column" paddingX={1} marginY={1}>
-        <Box flexDirection="column">
-          <Box>
-            <Text bold color="cyan">
-              ▸ resumed plan
-            </Text>
-            <Text dimColor>{`  ${done}/${total} done · last touched ${rp.relativeTime}`}</Text>
-          </Box>
-          {rp.summary ? (
-            <Box>
-              <Text color="cyan">{`  ${rp.summary}`}</Text>
-            </Box>
-          ) : null}
+        <Box>
+          <Text backgroundColor="#67e8f9" color="black" bold>
+            {" ↻ RESUMED PLAN "}
+          </Text>
+          <Text>{"  "}</Text>
+          <Text color="#67e8f9" bold>
+            {`${done}/${total}`}
+          </Text>
+          <Text dimColor>{`  done  ·  last touched ${rp.relativeTime}`}</Text>
         </Box>
+        {rp.summary ? (
+          <Box marginTop={1}>
+            <Text color="#67e8f9">{rp.summary}</Text>
+          </Box>
+        ) : null}
         <Box marginTop={1} flexDirection="column">
           <PlanStepList steps={rp.steps} statuses={statuses} focusStepId={nextStep?.id} />
         </Box>
@@ -424,26 +433,26 @@ export const EventRow = React.memo(function EventRow({
     const statuses = new Map(
       r.steps.map((s) => [s.id, completedSet.has(s.id) ? ("done" as const) : ("pending" as const)]),
     );
-    const navHint = r.total > 1 ? ` · ${r.index}/${r.total}` : "";
+    const navHint = r.total > 1 ? `  ·  ${r.index}/${r.total}` : "";
     return (
       <Box flexDirection="column" paddingX={1} marginY={1}>
-        <Box flexDirection="column">
-          <Box>
-            <Text bold dimColor>
-              ⏪ replay
-            </Text>
-            <Text
-              dimColor
-            >{`  completed ${r.relativeTime} · ${done}/${total} done${navHint}`}</Text>
+        <Box>
+          <Text backgroundColor="#94a3b8" color="black" bold>
+            {" ⏪ REPLAY "}
+          </Text>
+          <Text>{"  "}</Text>
+          <Text color="#94a3b8" bold>
+            {`${done}/${total}`}
+          </Text>
+          <Text dimColor>{`  done  ·  ${r.relativeTime}${navHint}`}</Text>
+        </Box>
+        {r.summary ? (
+          <Box marginTop={1}>
+            <Text color="#94a3b8">{r.summary}</Text>
           </Box>
-          {r.summary ? (
-            <Box>
-              <Text dimColor>{`  ${r.summary}`}</Text>
-            </Box>
-          ) : null}
-          <Box>
-            <Text dimColor>{`  ${r.archiveBasename}`}</Text>
-          </Box>
+        ) : null}
+        <Box>
+          <Text dimColor>{r.archiveBasename}</Text>
         </Box>
         {r.body ? (
           <Box marginTop={1} flexDirection="column">
@@ -466,11 +475,11 @@ export const EventRow = React.memo(function EventRow({
   if (event.role === "warning") {
     return (
       <Box>
-        <RoleGlyph glyph={ROLE_GLYPH.warning} color="yellow" />
-        <Text color="yellow">
-          {"  "}
-          {indentContinuationLines(event.text)}
+        <Text backgroundColor="#fbbf24" color="black" bold>
+          {" ▲ WARN "}
         </Text>
+        <Text>{"  "}</Text>
+        <Text color="#fbbf24">{indentContinuationLines(event.text)}</Text>
       </Box>
     );
   }

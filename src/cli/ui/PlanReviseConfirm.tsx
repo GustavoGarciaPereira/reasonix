@@ -18,6 +18,7 @@
 import { Box, Text } from "ink";
 import React from "react";
 import type { PlanStep } from "../../tools/plan.js";
+import { ModalCard } from "./ModalCard.js";
 import { SingleSelect } from "./Select.js";
 
 export type ReviseChoice = "accept" | "reject";
@@ -53,19 +54,16 @@ function computeDiff(oldSteps: PlanStep[], newSteps: PlanStep[]): DiffRow[] {
   return rows;
 }
 
-function riskDots(risk: PlanStep["risk"]): {
-  dots: string;
-  color: "green" | "yellow" | "red" | "gray";
-} {
+function riskDots(risk: PlanStep["risk"]): { dots: string; color: string } {
   switch (risk) {
     case "high":
-      return { dots: "●●●", color: "red" };
+      return { dots: "●●●", color: "#f87171" };
     case "med":
-      return { dots: "●● ", color: "yellow" };
+      return { dots: "●● ", color: "#fbbf24" };
     case "low":
-      return { dots: "●  ", color: "green" };
+      return { dots: "●  ", color: "#4ade80" };
     default:
-      return { dots: "   ", color: "gray" };
+      return { dots: "   ", color: "#94a3b8" };
   }
 }
 
@@ -81,27 +79,26 @@ function PlanReviseConfirmInner({
   const addedCount = rows.filter((r) => r.kind === "added").length;
   const keptCount = rows.filter((r) => r.kind === "kept").length;
   return (
-    <Box flexDirection="column" paddingX={1} marginY={1}>
-      <Box>
-        <Text bold color="yellow">
-          ✏ plan revision proposed
-        </Text>
-        <Text dimColor>{`  −${removedCount} +${addedCount} (${keptCount} kept)`}</Text>
-      </Box>
-      <Box marginTop={1}>
+    <ModalCard
+      accent="#fbbf24"
+      icon="✏"
+      title="plan revision proposed"
+      subtitle={`−${removedCount}  +${addedCount}  ·  ${keptCount} kept`}
+    >
+      <Box marginBottom={1}>
         <Text>{reason}</Text>
       </Box>
       {summary ? (
-        <Box marginTop={1}>
+        <Box marginBottom={1}>
           <Text dimColor>{`updated summary: ${summary}`}</Text>
         </Box>
       ) : null}
-      <Box marginTop={1} flexDirection="column">
+      <Box marginBottom={1} flexDirection="column">
         {rows.map((row) => {
           const risk = riskDots(row.step.risk);
           const prefix = row.kind === "removed" ? "−" : row.kind === "added" ? "+" : " ";
           const prefixColor =
-            row.kind === "removed" ? "red" : row.kind === "added" ? "green" : "gray";
+            row.kind === "removed" ? "#f87171" : row.kind === "added" ? "#4ade80" : "#94a3b8";
           const dim = row.kind === "kept";
           const strike = row.kind === "removed";
           return (
@@ -119,27 +116,25 @@ function PlanReviseConfirmInner({
           );
         })}
       </Box>
-      <Box marginTop={1}>
-        <SingleSelect
-          initialValue="accept"
-          items={[
-            {
-              value: "accept",
-              label: "Accept revision — apply the new step list",
-              hint: "Replaces the remaining plan with the proposed steps. Done steps are untouched.",
-            },
-            {
-              value: "reject",
-              label: "Reject — keep the original plan",
-              hint: "Drops the proposal. Model continues with the original remaining steps.",
-            },
-          ]}
-          onSubmit={(v) => onChoose(v as ReviseChoice)}
-          onCancel={() => onChoose("reject")}
-          footer="[↑↓] navigate  ·  [Enter] select  ·  [Esc] reject"
-        />
-      </Box>
-    </Box>
+      <SingleSelect
+        initialValue="accept"
+        items={[
+          {
+            value: "accept",
+            label: "Accept revision — apply the new step list",
+            hint: "Replaces the remaining plan with the proposed steps. Done steps are untouched.",
+          },
+          {
+            value: "reject",
+            label: "Reject — keep the original plan",
+            hint: "Drops the proposal. Model continues with the original remaining steps.",
+          },
+        ]}
+        onSubmit={(v) => onChoose(v as ReviseChoice)}
+        onCancel={() => onChoose("reject")}
+        footer="[↑↓] navigate  ·  [Enter] select  ·  [Esc] reject"
+      />
+    </ModalCard>
   );
 }
 

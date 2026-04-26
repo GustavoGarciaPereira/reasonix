@@ -16,9 +16,10 @@
  * no need to re-render the step body here.
  */
 
-import { Box, Text } from "ink";
+import { Box } from "ink";
 import React from "react";
 import type { PlanStep } from "../../tools/plan.js";
+import { ModalCard } from "./ModalCard.js";
 import { PlanStepList, type StepStatus } from "./PlanStepList.js";
 import { SingleSelect } from "./Select.js";
 
@@ -46,48 +47,41 @@ function PlanCheckpointConfirmInner({
   onChoose,
 }: PlanCheckpointConfirmProps) {
   const label = title ? `${stepId} · ${title}` : stepId;
-  const counter = total > 0 ? ` (${completed}/${total})` : "";
+  const counter = total > 0 ? `${completed}/${total}` : "";
   const isLast = total > 0 && completed >= total;
   const statuses = buildStatusMap(steps, completedStepIds, stepId, isLast);
+  const subtitle = counter ? `${counter}  ·  ${label}` : label;
   return (
-    <Box flexDirection="column" paddingX={1} marginY={1}>
-      <Box>
-        <Text bold color="green">
-          ▸ checkpoint — step done
-        </Text>
-        <Text dimColor>{`  ${label}${counter}`}</Text>
-      </Box>
+    <ModalCard accent="#86efac" icon="✓" title="checkpoint — step done" subtitle={subtitle}>
       {steps && steps.length > 0 ? (
-        <Box marginTop={1} flexDirection="column">
+        <Box marginBottom={1} flexDirection="column">
           <PlanStepList steps={steps} statuses={statuses} focusStepId={stepId} />
         </Box>
       ) : null}
-      <Box marginTop={1}>
-        <SingleSelect
-          initialValue={isLast ? "stop" : "continue"}
-          items={[
-            {
-              value: "continue",
-              label: "Continue — run the next step",
-              hint: "Model resumes with the next step. Use this when the result looks right and you don't need to tweak the remaining plan.",
-            },
-            {
-              value: "revise",
-              label: "Revise — give feedback before the next step",
-              hint: "Stay paused, type guidance (scope changes, skip steps, alternative approach). The model adjusts the remaining plan based on your message.",
-            },
-            {
-              value: "stop",
-              label: "Stop — end the plan here",
-              hint: "Model summarizes what was done and ends. Remaining steps are skipped.",
-            },
-          ]}
-          onSubmit={(v) => onChoose(v as CheckpointChoice)}
-          onCancel={() => onChoose("stop")}
-          footer="[↑↓] navigate  ·  [Enter] select  ·  [Esc] stop"
-        />
-      </Box>
-    </Box>
+      <SingleSelect
+        initialValue={isLast ? "stop" : "continue"}
+        items={[
+          {
+            value: "continue",
+            label: "Continue — run the next step",
+            hint: "Model resumes with the next step. Use this when the result looks right and you don't need to tweak the remaining plan.",
+          },
+          {
+            value: "revise",
+            label: "Revise — give feedback before the next step",
+            hint: "Stay paused, type guidance (scope changes, skip steps, alternative approach). The model adjusts the remaining plan based on your message.",
+          },
+          {
+            value: "stop",
+            label: "Stop — end the plan here",
+            hint: "Model summarizes what was done and ends. Remaining steps are skipped.",
+          },
+        ]}
+        onSubmit={(v) => onChoose(v as CheckpointChoice)}
+        onCancel={() => onChoose("stop")}
+        footer="[↑↓] navigate  ·  [Enter] select  ·  [Esc] stop"
+      />
+    </ModalCard>
   );
 }
 
