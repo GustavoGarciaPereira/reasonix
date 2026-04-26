@@ -239,7 +239,9 @@ export function PromptInput({
         <Box>
           <Text color={accentColor}>{BAR}</Text>
           <Text dimColor>{continuationIndent.slice(BAR.length)}</Text>
-          <Text dimColor>[Ctrl+J] newline · [Enter] submit · ends with \ for line continuation</Text>
+          <Text dimColor>
+            [Ctrl+J] newline · [Enter] submit · ends with \ for line continuation
+          </Text>
         </Box>
       ) : null}
       {disabled ? (
