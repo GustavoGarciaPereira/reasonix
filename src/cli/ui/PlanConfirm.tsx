@@ -21,6 +21,7 @@
 import { Box, Text } from "ink";
 import React from "react";
 import type { PlanStep } from "../../tools/plan.js";
+import { ModalCard } from "./ModalCard.js";
 import { PlanStepList } from "./PlanStepList.js";
 import { SingleSelect } from "./Select.js";
 
@@ -44,22 +45,15 @@ function PlanConfirmInner({ plan, steps, summary, onChoose }: PlanConfirmProps) 
     /^#{1,6}\s*(待确认|开放问题|风险|未知|假设|不确定)/im.test(plan);
 
   return (
-    <Box flexDirection="column" paddingX={1} marginY={1}>
-      <Box flexDirection="column">
-        <Box>
-          <Text bold color="cyan">
-            ▸ plan proposed (full text above) — approve / refine / cancel
-          </Text>
-        </Box>
-        {summary ? (
-          <Box>
-            <Text color="cyan">{`  ${summary}`}</Text>
-          </Box>
-        ) : null}
-      </Box>
+    <ModalCard
+      accent="#67e8f9"
+      icon="📋"
+      title="plan proposed"
+      subtitle={summary ?? "approve / refine / cancel"}
+    >
       {hasOpenQuestions ? (
-        <Box marginTop={1}>
-          <Text color="yellow">
+        <Box marginBottom={1}>
+          <Text color="#fbbf24">
             ▲ the plan flags open questions or risks — pick{" "}
             <Text bold>Refine / answer questions</Text> to write concrete answers before the model
             moves on.
@@ -67,36 +61,34 @@ function PlanConfirmInner({ plan, steps, summary, onChoose }: PlanConfirmProps) 
         </Box>
       ) : null}
       {steps && steps.length > 0 ? (
-        <Box marginTop={1} flexDirection="column">
+        <Box marginBottom={1} flexDirection="column">
           <PlanStepList steps={steps} />
         </Box>
       ) : null}
-      <Box marginTop={1}>
-        <SingleSelect
-          initialValue={hasOpenQuestions ? "refine" : "approve"}
-          items={[
-            {
-              value: "approve",
-              label: "Approve and implement",
-              hint: "Exit plan mode. The model starts executing. You'll get a text input to add any last instructions (or just press Enter to skip).",
-            },
-            {
-              value: "refine",
-              label: "Refine / answer questions",
-              hint: "Stay in plan mode. Write answers, modifications, or critiques; the model revises and re-submits.",
-            },
-            {
-              value: "cancel",
-              label: "Cancel",
-              hint: "Exit plan mode. Drop the plan; the model won't implement it.",
-            },
-          ]}
-          onSubmit={(v) => onChoose(v as PlanConfirmChoice)}
-          onCancel={() => onChoose("cancel")}
-          footer="[↑↓] navigate  ·  [Enter] select  ·  [Esc] cancel"
-        />
-      </Box>
-    </Box>
+      <SingleSelect
+        initialValue={hasOpenQuestions ? "refine" : "approve"}
+        items={[
+          {
+            value: "approve",
+            label: "Approve and implement",
+            hint: "Exit plan mode. The model starts executing. You'll get a text input to add any last instructions (or just press Enter to skip).",
+          },
+          {
+            value: "refine",
+            label: "Refine / answer questions",
+            hint: "Stay in plan mode. Write answers, modifications, or critiques; the model revises and re-submits.",
+          },
+          {
+            value: "cancel",
+            label: "Cancel",
+            hint: "Exit plan mode. Drop the plan; the model won't implement it.",
+          },
+        ]}
+        onSubmit={(v) => onChoose(v as PlanConfirmChoice)}
+        onCancel={() => onChoose("cancel")}
+        footer="[↑↓] navigate  ·  [Enter] select  ·  [Esc] cancel"
+      />
+    </ModalCard>
   );
 }
 

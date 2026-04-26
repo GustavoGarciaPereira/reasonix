@@ -1,5 +1,6 @@
 import { Box, Text } from "ink";
 import React from "react";
+import { ModalCard } from "./ModalCard.js";
 import { SingleSelect } from "./Select.js";
 
 export type ShellConfirmChoice = "run_once" | "always_allow" | "deny";
@@ -34,59 +35,46 @@ export interface ShellConfirmProps {
  */
 export function ShellConfirm({ command, allowPrefix, kind, onChoose }: ShellConfirmProps) {
   const isBackground = kind === "run_background";
+  const subtitle = isBackground
+    ? "long-running process — keeps running after approval, /kill to stop"
+    : "model wants to run a shell command";
   return (
-    <Box flexDirection="column" paddingX={1} marginY={1}>
-      <Box>
-        <Text bold color="red">
-          {isBackground
-            ? "▸ model wants to start a BACKGROUND process"
-            : "▸ model wants to run a shell command"}
+    <ModalCard
+      accent="#f87171"
+      icon={isBackground ? "⏱" : "⚡"}
+      title={isBackground ? "background process" : "shell command"}
+      subtitle={subtitle}
+    >
+      <Box marginBottom={1}>
+        <Text dimColor>{"$ "}</Text>
+        <Text color="#67e8f9" bold>
+          {command}
         </Text>
       </Box>
-      {isBackground ? (
-        <Box>
-          <Text dimColor>
-            {"  (long-running: dev server / watcher; keeps running after approval, /kill to stop)"}
-          </Text>
-        </Box>
-      ) : null}
-      <Box>
-        <Text color="red" dimColor>
-          {"──────────────────────────────────────────"}
-        </Text>
-      </Box>
-      <Box marginTop={1}>
-        <Text>
-          <Text dimColor>{"$ "}</Text>
-          <Text color="cyan">{command}</Text>
-        </Text>
-      </Box>
-      <Box marginTop={1}>
-        <SingleSelect
-          initialValue="run_once"
-          items={[
-            {
-              value: "run_once",
-              label: "Run once",
-              hint: "Execute this command, don't remember it.",
-            },
-            {
-              value: "always_allow",
-              label: `Always allow "${allowPrefix}" in this project`,
-              hint: "Save the prefix to ~/.reasonix/config.json; future matches auto-run.",
-            },
-            {
-              value: "deny",
-              label: "Deny",
-              hint: "Tell the model the user refused; it will continue without this command.",
-            },
-          ]}
-          onSubmit={(v) => onChoose(v as ShellConfirmChoice)}
-          onCancel={() => onChoose("deny")}
-          footer="[↑↓] navigate  ·  [Enter] select  ·  [Esc] deny"
-        />
-      </Box>
-    </Box>
+      <SingleSelect
+        initialValue="run_once"
+        items={[
+          {
+            value: "run_once",
+            label: "Run once",
+            hint: "Execute this command, don't remember it.",
+          },
+          {
+            value: "always_allow",
+            label: `Always allow "${allowPrefix}" in this project`,
+            hint: "Save the prefix to ~/.reasonix/config.json; future matches auto-run.",
+          },
+          {
+            value: "deny",
+            label: "Deny",
+            hint: "Tell the model the user refused; it will continue without this command.",
+          },
+        ]}
+        onSubmit={(v) => onChoose(v as ShellConfirmChoice)}
+        onCancel={() => onChoose("deny")}
+        footer="[↑↓] navigate  ·  [Enter] select  ·  [Esc] deny"
+      />
+    </ModalCard>
   );
 }
 

@@ -314,9 +314,13 @@ export const EventRow = React.memo(function EventRow({
     );
   }
   if (event.role === "info") {
+    // Strip a leading `▸ ` if the text already has one — keep the
+    // visual signal but match the new accent treatment.
+    const stripped = event.text.replace(/^▸\s*/, "");
     return (
       <Box>
-        <Text dimColor>{event.text}</Text>
+        <Text color={COLOR.info}>▸ </Text>
+        <Text dimColor>{stripped}</Text>
       </Box>
     );
   }

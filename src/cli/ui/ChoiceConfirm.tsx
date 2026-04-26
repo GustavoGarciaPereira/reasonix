@@ -13,9 +13,10 @@
  * without reading headers.
  */
 
-import { Box, Text } from "ink";
+import { Box } from "ink";
 import React from "react";
 import type { ChoiceOption } from "../../tools/choice.js";
+import { ModalCard } from "./ModalCard.js";
 import { SingleSelect } from "./Select.js";
 
 export type ChoiceConfirmChoice =
@@ -53,16 +54,8 @@ function ChoiceConfirmInner({ question, options, allowCustom, onChoose }: Choice
   });
 
   return (
-    <Box flexDirection="column" paddingX={1} marginY={1}>
+    <ModalCard accent="#f0abfc" icon="🔀" title="model wants you to pick" subtitle={question}>
       <Box>
-        <Text bold color="magenta">
-          🔀 the model is asking you to pick
-        </Text>
-      </Box>
-      <Box marginTop={1}>
-        <Text>{question}</Text>
-      </Box>
-      <Box marginTop={1}>
         <SingleSelect
           initialValue={options[0]?.id}
           items={items}
@@ -75,7 +68,7 @@ function ChoiceConfirmInner({ question, options, allowCustom, onChoose }: Choice
           footer="[↑↓] navigate  ·  [Enter] select  ·  [Esc] cancel"
         />
       </Box>
-    </Box>
+    </ModalCard>
   );
 }
 

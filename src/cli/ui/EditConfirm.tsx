@@ -2,6 +2,7 @@ import { Box, Text, useStdout } from "ink";
 import React, { useMemo, useState } from "react";
 import { formatEditBlockDiff } from "../../code/diff-preview.js";
 import type { EditBlock } from "../../code/edit-blocks.js";
+import { ModalCard } from "./ModalCard.js";
 import { useKeystroke } from "./keystroke-context.js";
 
 /**
@@ -137,42 +138,31 @@ export function EditConfirm({ block, onChoose }: EditConfirmProps) {
   const totalLines = allLines.length;
   const showScrollHud = hiddenAbove + hiddenBelow > 0;
 
+  const subtitleParts = [`-${removed} +${added} lines`];
+  if (showScrollHud) {
+    subtitleParts.push(
+      `viewing ${effectiveScroll + 1}-${effectiveScroll + visibleLines.length}/${totalLines}`,
+    );
+  }
   return (
-    <Box flexDirection="column" paddingX={1} marginY={1}>
-      <Box>
-        <Text bold color="yellow">
-          {"▸ model wants to edit a file"}
-        </Text>
-      </Box>
-      <Box>
-        <Text color="yellow" dimColor>
-          {"──────────────────────────────────────────"}
-        </Text>
-      </Box>
-      <Box marginTop={1}>
-        <Text>
-          <Text color={isNew ? "green" : "yellow"} bold>{`[${tag}] `}</Text>
-          <Text color="cyan">{block.path}</Text>
-          <Text dimColor>{`  (-${removed} +${added} lines)`}</Text>
-          {showScrollHud ? (
-            <Text dimColor>
-              {`  ·  viewing ${effectiveScroll + 1}-${effectiveScroll + visibleLines.length}/${totalLines}`}
-            </Text>
-          ) : null}
-        </Text>
-      </Box>
+    <ModalCard
+      accent={isNew ? "#86efac" : "#fcd34d"}
+      icon={isNew ? "✚" : "✎"}
+      title={`${tag}  ${block.path}`}
+      subtitle={subtitleParts.join("  ·  ")}
+    >
       {hiddenAbove > 0 ? (
         <Text
           dimColor
         >{`  ↑ ${hiddenAbove} line${hiddenAbove === 1 ? "" : "s"} above  (↑/k or PgUp)`}</Text>
       ) : null}
-      <Box marginTop={hiddenAbove > 0 ? 0 : 1} flexDirection="column">
+      <Box flexDirection="column">
         {visibleLines.map((line, i) => {
           const trimmed = line.trimStart();
           const color = trimmed.startsWith("+")
-            ? "green"
+            ? "#4ade80"
             : trimmed.startsWith("-")
-              ? "red"
+              ? "#f87171"
               : undefined;
           const dim = !color;
           return (
@@ -197,28 +187,28 @@ export function EditConfirm({ block, onChoose }: EditConfirmProps) {
       <Box marginTop={1}>
         <Text dimColor>
           {"["}
-          <Text color="cyan" bold>
+          <Text color="#67e8f9" bold>
             y
           </Text>
           {"/Enter] apply  ·  ["}
-          <Text color="cyan" bold>
+          <Text color="#67e8f9" bold>
             n
           </Text>
           {"] reject  ·  ["}
-          <Text color="cyan" bold>
+          <Text color="#67e8f9" bold>
             a
           </Text>
           {"] apply rest  ·  ["}
-          <Text color="cyan" bold>
+          <Text color="#67e8f9" bold>
             A
           </Text>
           {"] flip AUTO  ·  ["}
-          <Text color="cyan" bold>
+          <Text color="#67e8f9" bold>
             ↑↓/Space
           </Text>
           {"] scroll  ·  [Esc] abort"}
         </Text>
       </Box>
-    </Box>
+    </ModalCard>
   );
 }

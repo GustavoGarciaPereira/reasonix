@@ -1053,11 +1053,7 @@ function parseBulletItem(raw: string): BulletItem {
 function BlockView({ block, citations }: { block: Block; citations?: CitationMap }) {
   switch (block.kind) {
     case "heading":
-      return (
-        <Text bold color="cyan">
-          <InlineMd text={block.text} citations={citations} />
-        </Text>
-      );
+      return <HeadingView level={block.level} text={block.text} citations={citations} />;
     case "paragraph":
       return <ParagraphView text={block.text} citations={citations} />;
     case "bullet":
@@ -1353,6 +1349,59 @@ const DIAGRAM_VIEWER_HINT: Record<string, string> = {
  * user can tell at a glance that the terminal couldn't draw the
  * actual graph — they're looking at source to copy out.
  */
+/**
+ * Heading renderer. H1/H2 get solid-bg pills (high contrast, like
+ * page-section headers in editor outlines); H3+ stays bold + accent
+ * color so deeply nested headings don't visually overpower the
+ * content below them. Inline markdown still expands inside the
+ * heading so `code` and *italic* render correctly.
+ */
+function HeadingView({
+  level,
+  text,
+  citations,
+}: {
+  level: number;
+  text: string;
+  citations?: CitationMap;
+}) {
+  if (level === 1) {
+    return (
+      <Box marginY={1}>
+        <Text backgroundColor="#67e8f9" color="black" bold>
+          {` # ${text} `}
+        </Text>
+      </Box>
+    );
+  }
+  if (level === 2) {
+    return (
+      <Box marginTop={1}>
+        <Text backgroundColor="#c4b5fd" color="black" bold>
+          {` ## ${text} `}
+        </Text>
+      </Box>
+    );
+  }
+  if (level === 3) {
+    return (
+      <Box marginTop={1}>
+        <Text bold color="#f0abfc">
+          {"### "}
+        </Text>
+        <Text bold>
+          <InlineMd text={text} citations={citations} />
+        </Text>
+      </Box>
+    );
+  }
+  return (
+    <Text bold color="cyan">
+      <InlineMd text={text} citations={citations} />
+    </Text>
+  );
+}
+
 /**
  * Fenced code block. Round-cornered frame, language pill in the
  * top-left, body in syntax-flavored colors. Lives inside event rows
