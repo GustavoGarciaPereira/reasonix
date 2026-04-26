@@ -395,3 +395,204 @@ const defaultFs: NonNullable<AtMentionOptions["fs"]> = {
   },
   read: (p) => readFileSync(p, "utf8"),
 };
+
+// =============================================================================
+// @url mentions — async sibling of @path. Matches `@http(s)://...` after a
+// word boundary, fetches each URL once per session (in-memory cache), and
+// appends a "Referenced URLs" block under the prompt the model sees. Uses
+// the same web-fetch + HTML-strip pipeline as the model's `web_fetch` tool
+// so a `@url` reference and a model-issued fetch produce identical content.
+
+/**
+ * Matches `@http://...` or `@https://...` at a word boundary. Captures the
+ * URL minus the leading `@`. Trailing sentence punctuation is stripped
+ * separately because URLs can legitimately contain `,` `.` `)` etc., and a
+ * blanket trim would butcher real query strings.
+ */
+export const AT_URL_PATTERN = /(?<=^|\s)@(https?:\/\/\S+)/g;
+
+/** Default cap on inlined URL body (chars). Matches DEFAULT_AT_MENTION_MAX_BYTES order-of-magnitude. */
+export const DEFAULT_AT_URL_MAX_CHARS = 32_000;
+
+export interface AtUrlExpansion {
+  /** The raw `@url` token as it appeared in the text. */
+  token: string;
+  /** Absolute URL (after trailing-punctuation strip). */
+  url: string;
+  /** True if content was inlined. False = skipped (reason in `skip`). */
+  ok: boolean;
+  /** Page title when extractable from `<title>`. */
+  title?: string;
+  /** Char count of the (post-truncation) inlined body. */
+  chars?: number;
+  /** True iff the original page exceeded `maxChars` and was clipped. */
+  truncated?: boolean;
+  /** Why the mention was skipped — set when ok=false. */
+  skip?: "fetch-error" | "non-text" | "timeout" | "blocked";
+  /** Free-form error message attached to skip outcomes. */
+  error?: string;
+}
+
+export interface AtUrlOptions {
+  /** Max chars of inlined body per URL. Default DEFAULT_AT_URL_MAX_CHARS. */
+  maxChars?: number;
+  /** Per-URL fetch timeout in ms. */
+  timeoutMs?: number;
+  /**
+   * Override the fetcher — production wires `webFetch` from src/tools/web.ts.
+   * Tests inject a stub so the suite stays offline.
+   */
+  fetcher?: (
+    url: string,
+    opts: { maxChars?: number; timeoutMs?: number; signal?: AbortSignal },
+  ) => Promise<{ url: string; title?: string; text: string; truncated: boolean }>;
+  /**
+   * Optional cache the caller persists across calls (e.g. one map per
+   * session). Hit-on-URL skips the fetch entirely. Omit for one-shot
+   * tests that don't care about reuse.
+   */
+  cache?: Map<string, AtUrlExpansion & { body?: string }>;
+  /** Forward Esc/abort to the fetcher. */
+  signal?: AbortSignal;
+}
+
+/**
+ * Expand `@http(s)://…` mentions in `text`. Returns the (possibly augmented)
+ * text plus a per-URL report so the caller can surface fetched URLs in the
+ * UI. Async because each URL hits the network; the file-mention sibling
+ * (`expandAtMentions`) stays sync.
+ *
+ * Caching: when `opts.cache` is provided, a hit skips the network and
+ * reuses the prior expansion (including its body). One Map per session is
+ * the intended use — a long conversation that references the same URL
+ * twice doesn't pay twice.
+ *
+ * Trailing-punctuation handling: a sentence like "see @https://x.com." has
+ * the period stripped so the actual fetched URL is `https://x.com`. We
+ * conservatively strip only `.,;:!?` and `)]}>` from the tail; anything
+ * else is preserved so query strings survive intact.
+ */
+export async function expandAtUrls(
+  text: string,
+  opts: AtUrlOptions = {},
+): Promise<{ text: string; expansions: AtUrlExpansion[] }> {
+  const maxChars = opts.maxChars ?? DEFAULT_AT_URL_MAX_CHARS;
+  const fetcher = opts.fetcher;
+  if (!fetcher) {
+    throw new Error("expandAtUrls: fetcher option is required (wire src/tools/web.ts:webFetch)");
+  }
+
+  // De-dupe by URL so the same `@https://x.com` referenced twice fetches once.
+  const seen = new Map<string, AtUrlExpansion>();
+  const bodies = new Map<string, string>();
+  const order: string[] = [];
+
+  for (const match of text.matchAll(AT_URL_PATTERN)) {
+    const rawUrl = match[1] ?? "";
+    const url = stripUrlTail(rawUrl);
+    if (!url) continue;
+    if (seen.has(url)) continue;
+
+    const cached = opts.cache?.get(url);
+    if (cached) {
+      seen.set(url, cached);
+      if (cached.body) bodies.set(url, cached.body);
+      order.push(url);
+      continue;
+    }
+
+    let expansion: AtUrlExpansion;
+    let body = "";
+    try {
+      const page = await fetcher(url, {
+        maxChars,
+        timeoutMs: opts.timeoutMs,
+        signal: opts.signal,
+      });
+      body = page.text;
+      expansion = {
+        token: `@${url}`,
+        url,
+        ok: true,
+        title: page.title,
+        chars: body.length,
+        truncated: page.truncated,
+      };
+    } catch (err) {
+      const message = (err as Error).message ?? String(err);
+      // Tag a few common shapes so the UI can hint at causes.
+      let skip: AtUrlExpansion["skip"] = "fetch-error";
+      if (/aborted|timeout/i.test(message)) skip = "timeout";
+      else if (/40\d|forbidden|access denied|captcha/i.test(message)) skip = "blocked";
+      expansion = {
+        token: `@${url}`,
+        url,
+        ok: false,
+        skip,
+        error: message,
+      };
+    }
+    seen.set(url, expansion);
+    if (body) bodies.set(url, body);
+    if (opts.cache) opts.cache.set(url, { ...expansion, body });
+    order.push(url);
+  }
+
+  if (seen.size === 0) return { text, expansions: [] };
+
+  const expansions = order.map((u) => seen.get(u)!).filter(Boolean);
+  const blocks: string[] = [];
+  for (const ex of expansions) {
+    if (ex.ok) {
+      const titleAttr = ex.title ? ` title="${escapeAttr(ex.title)}"` : "";
+      const truncTag = ex.truncated ? ' truncated="true"' : "";
+      const body = bodies.get(ex.url) ?? "";
+      blocks.push(`<url href="${ex.url}"${titleAttr}${truncTag}>\n${body}\n</url>`);
+    } else {
+      const reasonAttr = ex.skip ?? "fetch-error";
+      blocks.push(`<url href="${ex.url}" skipped="${reasonAttr}" />`);
+    }
+  }
+  const augmented = `${text}\n\n[Referenced URLs]\n${blocks.join("\n\n")}`;
+  return { text: augmented, expansions };
+}
+
+/**
+ * Strip trailing sentence punctuation from a URL captured at a word
+ * boundary. `https://x.com.` → `https://x.com`; `https://x.com/?q=a)` →
+ * `https://x.com/?q=a`. Conservative: only strips `.,;:!?` and unmatched
+ * close-brackets `)]}>` from the very end. Internal punctuation in path /
+ * query is preserved.
+ *
+ * Returns empty string if everything stripped — caller treats as "no URL."
+ */
+export function stripUrlTail(raw: string): string {
+  let s = raw;
+  while (s.length > 0) {
+    const last = s[s.length - 1]!;
+    if (".,;:!?".includes(last)) {
+      s = s.slice(0, -1);
+      continue;
+    }
+    if (")]}>".includes(last)) {
+      // Only strip if the matching open bracket isn't elsewhere in the
+      // URL — avoids butchering legitimate `(thing)` query fragments.
+      const open = ({ ")": "(", "]": "[", "}": "{", ">": "<" } as const)[
+        last as ")" | "]" | "}" | ">"
+      ];
+      if (!s.includes(open)) {
+        s = s.slice(0, -1);
+        continue;
+      }
+    }
+    break;
+  }
+  return s;
+}
+
+function escapeAttr(s: string): string {
+  return s
+    .replace(/"/g, "&quot;")
+    .replace(/[\r\n]+/g, " ")
+    .trim();
+}

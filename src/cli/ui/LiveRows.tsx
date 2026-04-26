@@ -80,14 +80,16 @@ export function ModeStatusBar({
       </ModeBarFrame>
     );
   }
-  const isAuto = editMode === "auto";
-  const label = isAuto ? "AUTO" : "REVIEW";
-  const bg = isAuto ? "magenta" : "cyan";
-  const mid = isAuto
-    ? "edits land now · u to undo"
-    : pendingCount > 0
-      ? `${pendingCount} queued · y apply · n discard`
-      : "edits queued · y apply · n discard";
+  const label = editMode === "yolo" ? "YOLO" : editMode === "auto" ? "AUTO" : "REVIEW";
+  const bg = editMode === "yolo" ? "red" : editMode === "auto" ? "magenta" : "cyan";
+  const mid =
+    editMode === "yolo"
+      ? "edits + shell auto · /undo to roll back"
+      : editMode === "auto"
+        ? "edits land now · u to undo"
+        : pendingCount > 0
+          ? `${pendingCount} queued · y apply · n discard`
+          : "edits queued · y apply · n discard";
   return (
     <ModeBarFrame>
       <ModePill label={label} bg={bg} flash={flash} />

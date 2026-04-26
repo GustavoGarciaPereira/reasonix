@@ -117,20 +117,25 @@ const mode: SlashHandler = (args, _loop, ctx) => {
   let target: EditMode;
   if (raw === "review") target = "review";
   else if (raw === "auto") target = "auto";
+  else if (raw === "yolo") target = "yolo";
   else if (raw === "") {
-    // Bare /mode toggles, mirroring Shift+Tab. Users who just want to
-    // see current mode without flipping can read /status.
-    target = current === "auto" ? "review" : "auto";
+    // Bare /mode cycles review → auto → yolo → review, mirroring
+    // Shift+Tab. Users who just want to see current mode without
+    // flipping can read /status.
+    target = current === "review" ? "auto" : current === "auto" ? "yolo" : "review";
   } else {
-    return { info: "usage: /mode <review|auto>   (Shift+Tab also cycles)" };
+    return {
+      info: "usage: /mode <review|auto|yolo>   (Shift+Tab also cycles)",
+    };
   }
   ctx.setEditMode(target);
-  return {
-    info:
-      target === "auto"
-        ? "▸ edit mode: AUTO — edits apply immediately; press u within 5s to undo, or /undo later"
-        : "▸ edit mode: review — edits queue for /apply (or y) / /discard (or n)",
-  };
+  const banner =
+    target === "yolo"
+      ? "▸ edit mode: YOLO — edits AND shell commands auto-run with no prompt. /undo still rolls back edits. Use carefully."
+      : target === "auto"
+        ? "▸ edit mode: AUTO — edits apply immediately; press u within 5s to undo, or /undo later. Shell commands still ask."
+        : "▸ edit mode: review — edits queue for /apply (or y) / /discard (or n)";
+  return { info: banner };
 };
 
 const commit: SlashHandler = (args, _loop, ctx) => {

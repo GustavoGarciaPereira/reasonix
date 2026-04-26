@@ -4,7 +4,7 @@
  * touches the developer's actual memory files.
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -13,6 +13,7 @@ import {
   MEMORY_INDEX_FILE,
   MEMORY_INDEX_MAX_CHARS,
   MemoryStore,
+  applyGlobalReasonixMemory,
   applyMemoryStack,
   applyUserMemory,
   projectHash,
@@ -391,6 +392,48 @@ describe("user-memory", () => {
       expect(out).toContain(BASE);
       expect(out).not.toMatch(/# Project memory/);
       expect(out).not.toMatch(/# User memory/);
+      expect(out).not.toMatch(/# Global memory/);
+    });
+  });
+
+  describe("applyGlobalReasonixMemory", () => {
+    it("loads ~/.reasonix/REASONIX.md when present", () => {
+      mkdirSync(home, { recursive: true });
+      writeFileSync(join(home, "REASONIX.md"), "- always pnpm not npm\n", "utf8");
+      const out = applyGlobalReasonixMemory(BASE, home);
+      expect(out).toContain("# Global memory");
+      expect(out).toContain("always pnpm not npm");
+      expect(out.startsWith(BASE)).toBe(true);
+    });
+
+    it("returns BASE unchanged when the file is missing", () => {
+      const out = applyGlobalReasonixMemory(BASE, home);
+      expect(out).toBe(BASE);
+    });
+
+    it("returns BASE unchanged when the file is empty / whitespace-only", () => {
+      mkdirSync(home, { recursive: true });
+      writeFileSync(join(home, "REASONIX.md"), "   \n  \n", "utf8");
+      const out = applyGlobalReasonixMemory(BASE, home);
+      expect(out).toBe(BASE);
+    });
+
+    it("respects REASONIX_MEMORY=off opt-out", () => {
+      mkdirSync(home, { recursive: true });
+      writeFileSync(join(home, "REASONIX.md"), "- secret\n", "utf8");
+      const orig = process.env.REASONIX_MEMORY;
+      process.env.REASONIX_MEMORY = "off";
+      try {
+        const out = applyGlobalReasonixMemory(BASE, home);
+        expect(out).toBe(BASE);
+      } finally {
+        if (orig === undefined) {
+          // biome-ignore lint/performance/noDelete: env key must lose presence
+          delete process.env.REASONIX_MEMORY;
+        } else {
+          process.env.REASONIX_MEMORY = orig;
+        }
+      }
     });
   });
 });

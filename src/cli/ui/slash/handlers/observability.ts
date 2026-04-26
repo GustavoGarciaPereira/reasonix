@@ -145,11 +145,13 @@ const status: SlashHandler = (_args, loop, ctx) => {
     pending > 0 ? `  edits   ${pending} pending (/apply to commit, /discard to drop)` : "";
   const planLine = ctx.planMode ? "  plan    ON — writes gated (submit_plan + approval)" : "";
   const modeLine =
-    ctx.editMode === "auto"
-      ? "  mode    AUTO — edits apply immediately (u to undo within 5s · Shift+Tab to flip)"
-      : ctx.editMode === "review"
-        ? "  mode    review — edits queue for /apply or y  (Shift+Tab to flip)"
-        : "";
+    ctx.editMode === "yolo"
+      ? "  mode    YOLO — edits + shell auto-run with no prompt (/undo still rolls back · Shift+Tab to flip)"
+      : ctx.editMode === "auto"
+        ? "  mode    AUTO — edits apply immediately (u to undo within 5s · Shift+Tab to flip)"
+        : ctx.editMode === "review"
+          ? "  mode    review — edits queue for /apply or y  (Shift+Tab to flip)"
+          : "";
   const lines = [
     `  model   ${loop.model}`,
     `  flags   harvest=${loop.harvestEnabled ? "on" : "off"} · branch=${branchBudget > 1 ? branchBudget : "off"} · stream=${loop.stream ? "on" : "off"} · effort=${loop.reasoningEffort}`,

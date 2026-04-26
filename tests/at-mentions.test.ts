@@ -5,12 +5,16 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   AT_MENTION_PATTERN,
   AT_PICKER_PREFIX,
+  AT_URL_PATTERN,
+  type AtUrlExpansion,
   DEFAULT_AT_MENTION_MAX_BYTES,
   DEFAULT_PICKER_IGNORE_DIRS,
   detectAtPicker,
   expandAtMentions,
+  expandAtUrls,
   listFilesSync,
   rankPickerCandidates,
+  stripUrlTail,
 } from "../src/at-mentions.js";
 
 describe("AT_MENTION_PATTERN", () => {
@@ -368,5 +372,160 @@ describe("listFilesSync", () => {
     expect(DEFAULT_PICKER_IGNORE_DIRS).toContain("node_modules");
     expect(DEFAULT_PICKER_IGNORE_DIRS).toContain(".git");
     expect(DEFAULT_PICKER_IGNORE_DIRS).toContain("dist");
+  });
+});
+
+describe("AT_URL_PATTERN", () => {
+  it("matches @http and @https at a word boundary", () => {
+    const text = "see @https://example.com and @http://x.org/y for context";
+    const matches = [...text.matchAll(AT_URL_PATTERN)].map((m) => m[1]);
+    expect(matches).toEqual(["https://example.com", "http://x.org/y"]);
+  });
+
+  it("does NOT match @something-without-scheme", () => {
+    const text = "@foo.ts @user @127.0.0.1 are not URLs";
+    expect([...text.matchAll(AT_URL_PATTERN)]).toEqual([]);
+  });
+
+  it("does NOT match an URL embedded inside a longer word (no boundary)", () => {
+    const text = "noatsign@https://example.com";
+    expect([...text.matchAll(AT_URL_PATTERN)]).toEqual([]);
+  });
+});
+
+describe("stripUrlTail", () => {
+  it("strips trailing sentence punctuation", () => {
+    expect(stripUrlTail("https://example.com.")).toBe("https://example.com");
+    expect(stripUrlTail("https://example.com,")).toBe("https://example.com");
+    expect(stripUrlTail("https://example.com!")).toBe("https://example.com");
+    expect(stripUrlTail("https://example.com?")).toBe("https://example.com");
+  });
+
+  it("strips an unmatched closing bracket but keeps matched ones", () => {
+    expect(stripUrlTail("https://example.com)")).toBe("https://example.com");
+    // Matched: the URL has the open paren so we keep both.
+    expect(stripUrlTail("https://example.com/(thing)")).toBe("https://example.com/(thing)");
+  });
+
+  it("preserves internal punctuation in path / query", () => {
+    expect(stripUrlTail("https://x.com/a,b,c")).toBe("https://x.com/a,b,c");
+    expect(stripUrlTail("https://x.com/?q=a&b=c")).toBe("https://x.com/?q=a&b=c");
+  });
+
+  it("handles a chain of trailing punctuation", () => {
+    expect(stripUrlTail("https://x.com.).")).toBe("https://x.com");
+  });
+
+  it("returns empty string when everything strips away (degenerate input)", () => {
+    expect(stripUrlTail("...")).toBe("");
+  });
+});
+
+describe("expandAtUrls", () => {
+  function fakeFetcher(map: Record<string, { title?: string; text: string; truncated?: boolean }>) {
+    return async (url: string) => {
+      const hit = map[url];
+      if (!hit) throw new Error(`unknown URL in test: ${url}`);
+      return {
+        url,
+        title: hit.title,
+        text: hit.text,
+        truncated: hit.truncated ?? false,
+      };
+    };
+  }
+
+  it("inlines fetched content under [Referenced URLs]", async () => {
+    const fetcher = fakeFetcher({
+      "https://example.com": { title: "Example", text: "Hello world" },
+    });
+    const out = await expandAtUrls("see @https://example.com for details", { fetcher });
+    expect(out.expansions).toHaveLength(1);
+    expect(out.expansions[0]?.ok).toBe(true);
+    expect(out.expansions[0]?.title).toBe("Example");
+    expect(out.text).toContain("[Referenced URLs]");
+    expect(out.text).toContain('<url href="https://example.com" title="Example">');
+    expect(out.text).toContain("Hello world");
+    expect(out.text).toContain("</url>");
+  });
+
+  it("strips trailing punctuation before fetching", async () => {
+    const fetcher = fakeFetcher({
+      "https://example.com": { text: "body" },
+    });
+    const out = await expandAtUrls("look at @https://example.com.", { fetcher });
+    expect(out.expansions[0]?.url).toBe("https://example.com");
+  });
+
+  it("dedupes — same URL referenced twice fetches once", async () => {
+    let calls = 0;
+    const fetcher = async (url: string) => {
+      calls++;
+      return { url, text: "x", truncated: false };
+    };
+    const out = await expandAtUrls("@https://example.com and again @https://example.com", {
+      fetcher,
+    });
+    expect(calls).toBe(1);
+    expect(out.expansions).toHaveLength(1);
+  });
+
+  it("uses the cache across calls when one is provided", async () => {
+    let calls = 0;
+    const fetcher = async (url: string) => {
+      calls++;
+      return { url, text: "cached body", truncated: false };
+    };
+    const cache = new Map<string, AtUrlExpansion & { body?: string }>();
+    await expandAtUrls("@https://example.com", { fetcher, cache });
+    expect(calls).toBe(1);
+    const out2 = await expandAtUrls("@https://example.com again", { fetcher, cache });
+    expect(calls).toBe(1); // cache hit, no second network call
+    expect(out2.text).toContain("cached body");
+  });
+
+  it("emits a skipped <url /> tag on fetch failure (not a thrown error)", async () => {
+    const fetcher = async () => {
+      throw new Error("HTTP 503");
+    };
+    const out = await expandAtUrls("@https://example.com", { fetcher });
+    expect(out.expansions).toHaveLength(1);
+    expect(out.expansions[0]?.ok).toBe(false);
+    expect(out.expansions[0]?.skip).toBe("fetch-error");
+    expect(out.text).toContain('<url href="https://example.com" skipped="fetch-error" />');
+  });
+
+  it("tags timeouts and blocked responses for UI hinting", async () => {
+    const timeoutFetcher = async () => {
+      throw new Error("Request aborted: timeout");
+    };
+    const blockedFetcher = async () => {
+      throw new Error("HTTP 403 Forbidden");
+    };
+    const t = await expandAtUrls("@https://slow.example", { fetcher: timeoutFetcher });
+    expect(t.expansions[0]?.skip).toBe("timeout");
+    const b = await expandAtUrls("@https://blocked.example", { fetcher: blockedFetcher });
+    expect(b.expansions[0]?.skip).toBe("blocked");
+  });
+
+  it("returns input unchanged when no @url is in the text", async () => {
+    const out = await expandAtUrls("plain text with no urls", {
+      fetcher: async () => ({ url: "", text: "" }),
+    });
+    expect(out.text).toBe("plain text with no urls");
+    expect(out.expansions).toEqual([]);
+  });
+
+  it("throws when no fetcher is provided (misconfiguration, not a runtime error)", async () => {
+    await expect(expandAtUrls("@https://x.com", {})).rejects.toThrow(/fetcher option/);
+  });
+
+  it("escapes title attributes and never breaks XML on quotes/newlines", async () => {
+    const fetcher = fakeFetcher({
+      "https://x.com": { title: 'Weird "quoted"\ntitle', text: "body" },
+    });
+    const out = await expandAtUrls("@https://x.com", { fetcher });
+    expect(out.text).toContain('title="Weird &quot;quoted&quot; title"');
+    expect(out.text).not.toContain('"\n');
   });
 });

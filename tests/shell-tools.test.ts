@@ -312,6 +312,32 @@ describe("registerShellTools — dispatch integration", () => {
     expect(after).toMatch(/\[exit 0\]/);
     expect(after).toContain("ok");
   });
+
+  it("allowAll as a getter flips on / off live without re-registration", async () => {
+    // YOLO mode wires `allowAll: () => loadEditMode() === "yolo"`. The
+    // getter must be re-evaluated per dispatch so toggling the mode
+    // mid-session takes effect on the next tool call.
+    const cmd = "node -e \"process.stdout.write('ok')\"";
+    const registry = new ToolRegistry();
+    let yoloOn = false;
+    registerShellTools(registry, {
+      rootDir: tmp,
+      extraAllowed: [],
+      allowAll: () => yoloOn,
+    });
+
+    const beforeYolo = await registry.dispatch("run_command", JSON.stringify({ command: cmd }));
+    expect(beforeYolo).toMatch(/NeedsConfirmationError/);
+
+    yoloOn = true;
+    const duringYolo = await registry.dispatch("run_command", JSON.stringify({ command: cmd }));
+    expect(duringYolo).not.toMatch(/NeedsConfirmationError/);
+    expect(duringYolo).toMatch(/\[exit 0\]/);
+
+    yoloOn = false;
+    const afterYolo = await registry.dispatch("run_command", JSON.stringify({ command: cmd }));
+    expect(afterYolo).toMatch(/NeedsConfirmationError/);
+  });
 });
 
 describe("formatCommandResult", () => {

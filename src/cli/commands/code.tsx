@@ -19,7 +19,7 @@
  */
 
 import { basename, resolve } from "node:path";
-import { loadProjectShellAllowed } from "../../config.js";
+import { loadEditMode, loadProjectShellAllowed } from "../../config.js";
 import { sanitizeName } from "../../session.js";
 import { ToolRegistry } from "../../tools.js";
 import { registerChoiceTool } from "../../tools/choice.js";
@@ -81,6 +81,10 @@ export async function codeCommand(opts: CodeOptions = {}): Promise<void> {
     // via ShellConfirm mid-session takes effect on the next shell call
     // instead of waiting for `/new` or a relaunch.
     extraAllowed: () => loadProjectShellAllowed(rootDir),
+    // `yolo` edit-mode disables shell confirmations entirely. Re-read
+    // from config on each dispatch so /mode yolo (or Shift+Tab cycling
+    // through to it) flips the gate live without forcing a relaunch.
+    allowAll: () => loadEditMode() === "yolo",
     jobs,
   });
   // `submit_plan` is always in the spec list so the prefix cache stays

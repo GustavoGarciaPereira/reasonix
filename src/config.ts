@@ -22,13 +22,27 @@ import { dirname, join } from "node:path";
 export type PresetName = "fast" | "smart" | "max";
 
 /**
- * How `reasonix code` handles model-issued edits:
- *   - "review" — queue the edit into pendingEdits; user /apply or `y` commits.
- *   - "auto"   — apply immediately, snapshot for /undo, show a short undo
- *                banner so the user can roll back with one keystroke.
- * Persisted so `/mode auto` survives a relaunch. Missing → "review".
+ * How `reasonix code` handles model-issued tool calls. Two axes folded
+ * into one enum because users think about "how trusting am I right now?"
+ * as a single dial, not as "writes vs shell" pairs.
+ *
+ *   - "review" — queue edits into pendingEdits (user /apply or `y` to
+ *                commit); shell commands NOT on the read-only allowlist
+ *                hit ShellConfirm. Default.
+ *   - "auto"   — apply edits immediately, snapshot for /undo, show a
+ *                short undo banner. Shell still goes through ShellConfirm
+ *                for non-allowlisted commands.
+ *   - "yolo"   — apply edits immediately AND auto-approve every shell
+ *                command. No prompts at all. Use when you trust the
+ *                current direction and just want to iterate fast; /undo
+ *                still rolls back individual edit batches.
+ *
+ * Persisted so `/mode <x>` survives a relaunch. Missing → "review".
+ *
+ * Codex-equivalence note: review ≈ untrusted, auto ≈ on-request,
+ * yolo ≈ never.
  */
-export type EditMode = "review" | "auto";
+export type EditMode = "review" | "auto" | "yolo";
 
 /**
  * reasoning_effort cap for the model. "max" is the agent-class default;

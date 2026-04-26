@@ -149,10 +149,11 @@ export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
   },
   {
     cmd: "mode",
-    argsHint: "[review|auto]",
-    summary: "edit-gate: review (queue for /apply) or auto (apply+undo banner). Shift+Tab cycles.",
+    argsHint: "[review|auto|yolo]",
+    summary:
+      "edit-gate: review (queue) · auto (apply+undo) · yolo (apply+auto-shell). Shift+Tab cycles.",
     contextual: "code",
-    argCompleter: ["review", "auto"],
+    argCompleter: ["review", "auto", "yolo"],
   },
   { cmd: "jobs", summary: "list background jobs started by run_background", contextual: "code" },
   {

@@ -1,7 +1,7 @@
 import type { WriteStream } from "node:fs";
 import { Box, Static, useApp, useStdout } from "ink";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { expandAtMentions } from "../../at-mentions.js";
+import { type AtUrlExpansion, expandAtMentions, expandAtUrls } from "../../at-mentions.js";
 import {
   type ApplyResult,
   type EditBlock,
@@ -39,6 +39,7 @@ import type { PlanStep, StepCompletion } from "../../tools/plan.js";
 import { formatCommandResult, runCommand } from "../../tools/shell.js";
 import { registerSkillTools } from "../../tools/skills.js";
 import { formatSubagentResult, spawnSubagent } from "../../tools/subagent.js";
+import { webFetch } from "../../tools/web.js";
 import { openTranscriptFile, recordFromLoopEvent, writeRecord } from "../../transcript.js";
 import { appendUsage } from "../../usage.js";
 import { AtMentionSuggestions } from "./AtMentionSuggestions.js";
@@ -63,7 +64,7 @@ import {
   formatPendingPreview,
   partitionEdits,
 } from "./edit-history.js";
-import { appendProjectMemory, detectHashMemory } from "./hash-memory.js";
+import { appendGlobalMemory, appendProjectMemory, detectHashMemory } from "./hash-memory.js";
 import { useKeystroke } from "./keystroke-context.js";
 import { handleMcpBrowseSlash } from "./mcp-browse.js";
 import { formatLongPaste } from "./paste-collapse.js";
@@ -442,6 +443,12 @@ export function App({
   const historyCursor = useRef<number>(-1);
   // Disambiguates <Static> keys when a single turn yields multiple assistant_final events.
   const assistantIterCounter = useRef<number>(0);
+  // Per-session @url fetch cache. Keyed by stripped URL; same URL
+  // referenced twice in one session fetches once. Not persisted —
+  // we deliberately re-fetch on session resume since the page may
+  // have changed. Shape mirrors AtUrlExpansion + an optional `body`
+  // so the trailing block can be reconstructed from cache alone.
+  const atUrlCache = useRef<Map<string, AtUrlExpansion & { body?: string }>>(new Map());
   // Full untruncated tool results, in arrival order. The EventLog
   // renderer clips tool output at 400 chars for display; `/tool N`
   // reads from this ref to show the real thing. Not persisted — a
@@ -830,17 +837,20 @@ export function App({
       !pendingRevision
     ) {
       setEditMode((m) => {
-        const next: EditMode = m === "auto" ? "review" : "auto";
+        // Three-stop cycle: review → auto → yolo → review. yolo also
+        // disables shell confirmations (read live by registerShellTools'
+        // allowAll getter), so users who want true zero-prompt iteration
+        // can hit Shift+Tab twice from the default.
+        const next: EditMode = m === "review" ? "auto" : m === "auto" ? "yolo" : "review";
+        const message =
+          next === "yolo"
+            ? "▸ edit mode: YOLO — edits AND shell commands auto-run. /undo still rolls back edits. Use carefully."
+            : next === "auto"
+              ? "▸ edit mode: AUTO — edits apply immediately; press u within 5s to undo. Shell commands still ask."
+              : "▸ edit mode: review — edits queue for /apply (or y) / /discard (or n)";
         setHistorical((prev) => [
           ...prev,
-          {
-            id: `mode-${Date.now()}`,
-            role: "info",
-            text:
-              next === "auto"
-                ? "▸ edit mode: AUTO — edits apply immediately; press u within 5s to undo"
-                : "▸ edit mode: review — edits queue for /apply (or y) / /discard (or n)",
-          },
+          { id: `mode-${Date.now()}`, role: "info", text: message },
         ]);
         return next;
       });
@@ -1036,7 +1046,10 @@ export function App({
         return formatEditResults(results);
       };
 
-      if (editModeRef.current === "auto") return applyNow();
+      // yolo behaves like auto for edit application — the only extra
+      // power yolo adds is bypassing shell confirmations (handled in
+      // shell.ts via the allowAll getter).
+      if (editModeRef.current === "auto" || editModeRef.current === "yolo") return applyNow();
 
       // review mode, tool-call path: suspend the interceptor on the
       // per-edit modal unless the user has already hit "apply-rest-of-
@@ -1258,24 +1271,28 @@ export function App({
         return;
       }
 
-      // Hash mode — `#note` appends to REASONIX.md so future sessions
-      // pin the note in the immutable prefix. No model round-trip.
-      // `\#literal` is the escape: detectHashMemory returns kind:"escape"
-      // and we fall through to normal submission with the backslash
-      // stripped so the model receives `#literal` verbatim.
+      // Hash mode — `#note` (project) and `#g note` (global) append to
+      // a REASONIX.md so future sessions pin the note in the immutable
+      // prefix. No model round-trip. `\#literal` escape falls through to
+      // normal submission with the backslash stripped so the model sees
+      // `#literal` verbatim.
       const hashParse = detectHashMemory(text);
-      if (hashParse?.kind === "memory") {
+      if (hashParse?.kind === "memory" || hashParse?.kind === "memory-global") {
+        const isGlobal = hashParse.kind === "memory-global";
         const memRoot = codeMode?.rootDir ?? process.cwd();
         promptHistory.current.push(text);
         try {
-          const result = appendProjectMemory(memRoot, hashParse.note);
+          const result = isGlobal
+            ? appendGlobalMemory(hashParse.note)
+            : appendProjectMemory(memRoot, hashParse.note);
           const verb = result.created ? "created" : "appended to";
+          const scopeTag = isGlobal ? "global" : "project";
           setHistorical((prev) => [
             ...prev,
             {
               id: `hash-${Date.now()}`,
               role: "info",
-              text: `▸ noted — ${verb} ${result.path}`,
+              text: `▸ noted (${scopeTag}) — ${verb} ${result.path}`,
             },
           ]);
         } catch (err) {
@@ -1628,6 +1645,56 @@ export function App({
           }
         }
       }
+      // Expand `@http(s)://...` URL mentions. Available in any mode (chat
+      // OR code) since fetching a URL doesn't need a sandbox root. Awaits
+      // the network sequentially across URLs — for a typical 1-2 URLs in
+      // a prompt this is fine; if a user pastes 10 URLs the latency adds
+      // up but their prompt is also already huge.
+      if (/(?:^|\s)@https?:\/\//.test(text)) {
+        try {
+          const urlExpanded = await expandAtUrls(modelInput, {
+            fetcher: webFetch,
+            cache: atUrlCache.current,
+          });
+          if (urlExpanded.expansions.length > 0) {
+            modelInput = urlExpanded.text;
+            const inlined = urlExpanded.expansions
+              .filter((ex) => ex.ok)
+              .map((ex) => {
+                const tag = ex.title ? `${ex.title} (${ex.url})` : ex.url;
+                const trunc = ex.truncated ? " · truncated" : "";
+                return `${tag} · ${(ex.chars ?? 0).toLocaleString()} chars${trunc}`;
+              });
+            const skipped = urlExpanded.expansions
+              .filter((ex) => !ex.ok)
+              .map((ex) => `${ex.url} (${ex.skip ?? "fetch-error"})`);
+            const parts: string[] = [];
+            if (inlined.length > 0) parts.push(`inlined ${inlined.join("; ")}`);
+            if (skipped.length > 0) parts.push(`skipped ${skipped.join("; ")}`);
+            if (parts.length > 0) {
+              setHistorical((prev) => [
+                ...prev,
+                {
+                  id: `aturl-${Date.now()}`,
+                  role: "info",
+                  text: `▸ @url: ${parts.join("; ")}`,
+                },
+              ]);
+            }
+          }
+        } catch (err) {
+          // expandAtUrls itself only throws on misconfiguration (no
+          // fetcher). Per-URL failures are surfaced via the skip path.
+          setHistorical((prev) => [
+            ...prev,
+            {
+              id: `aturl-e-${Date.now()}`,
+              role: "warning",
+              text: `@url expansion failed: ${(err as Error).message}`,
+            },
+          ]);
+        }
+      }
 
       try {
         for await (const ev of loop.step(modelInput)) {
@@ -1732,7 +1799,7 @@ export function App({
               // Blocks dropped in a forced summary are display-only.
               const blocks = parseEditBlocks(finalText);
               if (blocks.length > 0) {
-                if (editModeRef.current === "auto") {
+                if (editModeRef.current === "auto" || editModeRef.current === "yolo") {
                   const snaps = snapshotBeforeEdits(blocks, codeMode.rootDir);
                   const results = applyEditBlocks(blocks, codeMode.rootDir);
                   const good = results.some(

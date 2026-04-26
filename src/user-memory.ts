@@ -337,6 +337,64 @@ export class MemoryStore {
 }
 
 /**
+ * Read the freeform global REASONIX.md (~/.reasonix/REASONIX.md). This
+ * is the destination for the `#g <note>` quick-write prefix — symmetric
+ * to project REASONIX.md but pinned across every session regardless of
+ * working directory. Returns post-cap content or `null` when the file
+ * is absent / empty / unreadable.
+ *
+ * Distinct from MEMORY.md (the curated index of named .md files) — this
+ * is one freeform bullet list the user appends to with `#g`.
+ */
+export function readGlobalReasonixMemory(
+  homeDir: string = join(homedir(), ".reasonix"),
+): { path: string; content: string; originalChars: number; truncated: boolean } | null {
+  const path = join(homeDir, "REASONIX.md");
+  if (!existsSync(path)) return null;
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const originalChars = trimmed.length;
+  // Reuse the project-memory cap so both freeform files have the same
+  // headroom (8000 chars ≈ 2k tokens). They serve the same purpose at
+  // different scopes.
+  const truncated = originalChars > 8000;
+  const content = truncated
+    ? `${trimmed.slice(0, 8000)}\n… (truncated ${originalChars - 8000} chars)`
+    : trimmed;
+  return { path, content, originalChars, truncated };
+}
+
+/**
+ * Append the global freeform REASONIX.md to `basePrompt` as its own
+ * pinned section. No-op when the file is absent / empty / disabled.
+ * Stable byte output for stable prefix hashing — same file content
+ * always produces the same prompt suffix.
+ */
+export function applyGlobalReasonixMemory(basePrompt: string, homeDir?: string): string {
+  if (!memoryEnabled()) return basePrompt;
+  const dir = homeDir ?? join(homedir(), ".reasonix");
+  const mem = readGlobalReasonixMemory(dir);
+  if (!mem) return basePrompt;
+  return [
+    basePrompt,
+    "",
+    "# Global memory (~/.reasonix/REASONIX.md)",
+    "",
+    "Cross-project notes the user pinned via the `#g` prompt prefix. Treat as authoritative — same level of trust as project memory.",
+    "",
+    "```",
+    mem.content,
+    "```",
+  ].join("\n");
+}
+
+/**
  * Append `MEMORY_GLOBAL` and (optionally) `MEMORY_PROJECT` blocks to
  * `basePrompt`. Omits a block entirely when its index is absent — an
  * empty tag would add bytes to the prefix hash without content.
@@ -381,15 +439,16 @@ export function applyUserMemory(
 }
 
 /**
- * Compose every lazy-loaded prefix block in one call: REASONIX.md,
- * user memory (global + project), and the skills index. Drop-in
- * replacement for `applyProjectMemory` at CLI entry points. Stacking
- * order is stable — the prefix hash only changes when block *content*
- * changes, not when this helper is called a second time with the same
- * filesystem state.
+ * Compose every lazy-loaded prefix block in one call: project REASONIX.md,
+ * global REASONIX.md (`#g` destination), user memory indexes (global +
+ * per-project), and the skills index. Drop-in replacement for
+ * `applyProjectMemory` at CLI entry points. Stacking order is stable —
+ * the prefix hash only changes when block *content* changes, not when
+ * this helper is called a second time with the same filesystem state.
  */
 export function applyMemoryStack(basePrompt: string, rootDir: string): string {
   const withProject = applyProjectMemory(basePrompt, rootDir);
-  const withMemory = applyUserMemory(withProject, { projectRoot: rootDir });
+  const withGlobal = applyGlobalReasonixMemory(withProject);
+  const withMemory = applyUserMemory(withGlobal, { projectRoot: rootDir });
   return applySkillsIndex(withMemory, { projectRoot: rootDir });
 }

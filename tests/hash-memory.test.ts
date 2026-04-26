@@ -2,7 +2,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { appendProjectMemory, detectHashMemory } from "../src/cli/ui/hash-memory.js";
+import {
+  appendGlobalMemory,
+  appendProjectMemory,
+  detectHashMemory,
+  globalMemoryPath,
+} from "../src/cli/ui/hash-memory.js";
 
 describe("detectHashMemory", () => {
   it("returns the note body for a `#`-prefixed input", () => {
@@ -55,6 +60,40 @@ describe("detectHashMemory", () => {
       kind: "escape",
       text: "# heading text",
     });
+    // The escape also covers `\#g foo` so users can send "#g foo"
+    // verbatim to the model without it routing to global memory.
+    expect(detectHashMemory("\\#g foo")).toEqual({ kind: "escape", text: "#g foo" });
+  });
+
+  it("`#g <note>` routes to global memory (whitespace after the `g` is required)", () => {
+    expect(detectHashMemory("#g always use pnpm")).toEqual({
+      kind: "memory-global",
+      note: "always use pnpm",
+    });
+    // Multiple spaces tolerated.
+    expect(detectHashMemory("#g   always use pnpm")).toEqual({
+      kind: "memory-global",
+      note: "always use pnpm",
+    });
+  });
+
+  it("`#g` alone (or with only trailing whitespace) is not a memory write", () => {
+    // User clearly intended the global form but typed no body — we
+    // return null instead of silently routing to project memory with
+    // body=`g`, which would be confusing.
+    expect(detectHashMemory("#g")).toBeNull();
+    expect(detectHashMemory("#g ")).toBeNull();
+    expect(detectHashMemory("#g    ")).toBeNull();
+  });
+
+  it("`#golang` (no whitespace after g) routes to PROJECT memory, not global", () => {
+    // This is the important boundary case: notes that happen to start
+    // with `g` shouldn't be hijacked. The `\s+` after `g` enforces it.
+    expect(detectHashMemory("#golang convention: gofmt before commit")).toEqual({
+      kind: "memory",
+      note: "golang convention: gofmt before commit",
+    });
+    expect(detectHashMemory("#good idea")).toEqual({ kind: "memory", note: "good idea" });
   });
 });
 
@@ -122,5 +161,54 @@ describe("appendProjectMemory", () => {
     const result = appendProjectMemory(nested, "scoped note");
     expect(result.path).toBe(join(nested, "REASONIX.md"));
     expect(existsSync(join(dir, "REASONIX.md"))).toBe(false);
+  });
+});
+
+describe("appendGlobalMemory", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "reasonix-globalmem-"));
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(home, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  it("creates ~/.reasonix/REASONIX.md (with parent dir) when missing", () => {
+    const path = globalMemoryPath(home);
+    expect(existsSync(path)).toBe(false);
+    const result = appendGlobalMemory("always use pnpm", home);
+    expect(result.created).toBe(true);
+    expect(result.path).toBe(path);
+    const content = readFileSync(path, "utf8");
+    expect(content).toContain("# Reasonix global memory");
+    expect(content).toMatch(/- always use pnpm\n$/);
+  });
+
+  it("appends to an existing global file", () => {
+    const path = globalMemoryPath(home);
+    mkdirSync(join(home, ".reasonix"), { recursive: true });
+    writeFileSync(path, "# header\n\n- existing\n", "utf8");
+    appendGlobalMemory("second", home);
+    const content = readFileSync(path, "utf8");
+    expect(content).toContain("- existing");
+    expect(content).toMatch(/- second\n$/);
+  });
+
+  it("uses os.homedir() when no override is passed (smoke check)", () => {
+    // We don't actually write — just verify the resolved path looks
+    // sane. The test environment's HOME is a tmpdir from the parent
+    // afterEach setup, so this won't pollute the real user home.
+    const path = globalMemoryPath();
+    expect(path).toMatch(/[/\\]\.reasonix[/\\]REASONIX\.md$/);
+  });
+
+  it("rejects empty notes", () => {
+    expect(() => appendGlobalMemory("   ", home)).toThrow(/cannot be empty/);
   });
 });

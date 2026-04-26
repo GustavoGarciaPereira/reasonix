@@ -57,8 +57,14 @@ export interface ShellToolsOptions {
    * When true, skip the allowlist entirely and auto-run every command.
    * Off by default — this is an escape hatch for non-interactive use
    * (CI, benchmarks) where a human can't be in the loop to confirm.
+   *
+   * Accepts either a static boolean (captured once) or a getter called
+   * on every dispatch. The getter form is what `reasonix code` uses to
+   * wire `editMode === "yolo"` into the registry: flipping the mode
+   * mid-session must take effect on the next tool call without forcing
+   * a re-registration. Static `true` is fine for CI / benchmark code.
    */
-  allowAll?: boolean;
+  allowAll?: boolean | (() => boolean);
   /**
    * Background-process registry shared between `run_background`,
    * `job_output`, `stop_job`, `list_jobs`, and the /jobs /kill slashes.
@@ -604,7 +610,11 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
           const snapshot = opts.extraAllowed ?? [];
           return () => snapshot;
         })();
-  const allowAll = opts.allowAll ?? false;
+  // Resolve dynamically so the TUI can flip yolo mode mid-session and
+  // have the registry pick it up on the next dispatch. Static booleans
+  // are wrapped into a thunk for uniformity.
+  const isAllowAll: () => boolean =
+    typeof opts.allowAll === "function" ? opts.allowAll : () => opts.allowAll === true;
 
   registry.register({
     name: "run_command",
@@ -615,7 +625,7 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
     // during planning. Anything that would otherwise trigger a
     // confirmation prompt is treated as "not read-only" and bounced.
     readOnlyCheck: (args: { command?: unknown }) => {
-      if (allowAll) return true;
+      if (isAllowAll()) return true;
       const cmd = typeof args?.command === "string" ? args.command.trim() : "";
       if (!cmd) return false;
       return isAllowed(cmd, getExtraAllowed());
@@ -638,7 +648,7 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
     fn: async (args: { command: string; timeoutSec?: number }, ctx) => {
       const cmd = args.command.trim();
       if (!cmd) throw new Error("run_command: empty command");
-      if (!allowAll && !isAllowed(cmd, getExtraAllowed())) {
+      if (!isAllowAll() && !isAllowed(cmd, getExtraAllowed())) {
         throw new NeedsConfirmationError(cmd);
       }
       const effectiveTimeout = Math.max(1, Math.min(600, args.timeoutSec ?? timeoutSec));
@@ -675,7 +685,7 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
     fn: async (args: { command: string; waitSec?: number }, ctx) => {
       const cmd = args.command.trim();
       if (!cmd) throw new Error("run_background: empty command");
-      if (!allowAll && !isAllowed(cmd, getExtraAllowed())) {
+      if (!isAllowAll() && !isAllowed(cmd, getExtraAllowed())) {
         throw new NeedsConfirmationError(cmd);
       }
       const result = await jobs.start(cmd, {
