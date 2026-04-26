@@ -50,22 +50,6 @@ function riskDots(risk: PlanStep["risk"]): {
   }
 }
 
-function statusGlyph(status: StepStatus): {
-  glyph: string;
-  color: "green" | "cyan" | "gray" | "yellow";
-} {
-  switch (status) {
-    case "done":
-      return { glyph: "✓", color: "green" };
-    case "running":
-      return { glyph: "▶", color: "cyan" };
-    case "skipped":
-      return { glyph: "—", color: "gray" };
-    default:
-      return { glyph: " ", color: "yellow" };
-  }
-}
-
 function getStatus(stepId: string, statuses: PlanStepListProps["statuses"]): StepStatus {
   if (!statuses) return "pending";
   if (statuses instanceof Map) {
@@ -80,13 +64,14 @@ function PlanStepListInner({ steps, statuses, focusStepId }: PlanStepListProps) 
   const doneCount = Array.from({ length: steps.length }, (_, i) =>
     getStatus(steps[i]!.id, statuses),
   ).filter((s) => s === "done").length;
+  const pct = Math.round((doneCount / steps.length) * 100);
 
   return (
     <Box flexDirection="column">
       <Box>
         <Text dimColor>
           {`${steps.length} step${steps.length === 1 ? "" : "s"}`}
-          {doneCount > 0 ? ` · ${doneCount} done` : ""}
+          {doneCount > 0 ? ` · ${doneCount}/${steps.length} done (${pct}%)` : ""}
           {hasAnyRisk ? " · risk: " : ""}
         </Text>
         {hasAnyRisk ? <RiskLegend /> : null}
@@ -96,26 +81,62 @@ function PlanStepListInner({ steps, statuses, focusStepId }: PlanStepListProps) 
           const status = getStatus(step.id, statuses);
           const focus = focusStepId === step.id;
           const risk = riskDots(step.risk);
-          const glyph = statusGlyph(status);
           const titleDim = status === "done" || status === "skipped";
           return (
             <Box key={step.id}>
-              <Text color={focus ? "cyan" : "gray"} bold={focus}>
-                {focus ? "› " : "  "}
+              <Text color={focus ? "#67e8f9" : "gray"} bold={focus}>
+                {focus ? "▸ " : "  "}
               </Text>
               <Text color={risk.color} bold>
                 {risk.dots}
               </Text>
-              <Text color={glyph.color} bold>
-                {` ${glyph.glyph} `}
+              <Text> </Text>
+              <StatusBadge status={status} />
+              <Text> </Text>
+              <Text dimColor={titleDim} bold={focus}>
+                {`${step.id} · ${step.title}`}
               </Text>
-              <Text dimColor={titleDim}>{`${step.id} · ${step.title}`}</Text>
             </Box>
           );
         })}
       </Box>
     </Box>
   );
+}
+
+/**
+ * Status pill — solid-bg badge per step state. Reads at a glance
+ * better than a glyph + color text: ` DONE `, ` RUN `, ` SKIP `,
+ * ` PEND `. The label widths are normalized so the column under
+ * the badge stays aligned even when statuses mix.
+ */
+function StatusBadge({ status }: { status: StepStatus }) {
+  switch (status) {
+    case "done":
+      return (
+        <Text backgroundColor="#4ade80" color="black" bold>
+          {" ✓ DONE "}
+        </Text>
+      );
+    case "running":
+      return (
+        <Text backgroundColor="#67e8f9" color="black" bold>
+          {" ▶ RUN  "}
+        </Text>
+      );
+    case "skipped":
+      return (
+        <Text backgroundColor="#94a3b8" color="black" bold>
+          {" — SKIP "}
+        </Text>
+      );
+    default:
+      return (
+        <Text color="#94a3b8" dimColor>
+          {" ☐ PEND "}
+        </Text>
+      );
+  }
 }
 
 function RiskLegend() {

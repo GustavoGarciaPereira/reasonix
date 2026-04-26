@@ -160,19 +160,20 @@ export function UndoBanner({
   const remainingSec = Math.ceil(remainingMs / 1000);
   const ok = banner.results.filter((r) => r.status === "applied" || r.status === "created").length;
   const total = banner.results.length;
+  const urgent = remainingSec <= 1;
   return (
     <Box marginY={1} paddingX={1}>
-      <Text color="magenta" bold>
-        {"✓ auto-applied "}
+      <Text backgroundColor="#c4b5fd" color="black" bold>
+        {` ✓ AUTO-APPLIED ${ok}/${total} `}
       </Text>
-      <Text color="magenta">{`${ok}/${total} edit${total === 1 ? "" : "s"}`}</Text>
-      <Text dimColor>{" · press "}</Text>
-      <Text color="magenta" bold>
-        {"u"}
+      <Text dimColor>{"   press "}</Text>
+      <Text backgroundColor="#67e8f9" color="black" bold>
+        {" u "}
       </Text>
-      <Text dimColor>{" to undo  ("}</Text>
-      <Text color={remainingSec <= 1 ? "red" : "magenta"}>{`${remainingSec}s`}</Text>
-      <Text dimColor>{")"}</Text>
+      <Text dimColor>{" to undo   "}</Text>
+      <Text color={urgent ? "#f87171" : "#c4b5fd"} bold={urgent}>
+        {`${remainingSec}s`}
+      </Text>
     </Box>
   );
 }
@@ -192,10 +193,16 @@ export function SubagentRow({
   const tick = useTick();
   const seconds = (activity.elapsedMs / 1000).toFixed(1);
   return (
-    <Box paddingLeft={2}>
-      <Text color="magenta">{SPINNER_FRAMES[tick % SPINNER_FRAMES.length]}</Text>
-      <Text color="magenta">{` ⌬ subagent: ${activity.task}`}</Text>
-      <Text dimColor>{` · iter ${activity.iter} · ${seconds}s`}</Text>
+    <Box paddingLeft={3}>
+      <Text color="#c4b5fd" bold>
+        {SPINNER_FRAMES[tick % SPINNER_FRAMES.length]}
+      </Text>
+      <Text>{"  "}</Text>
+      <Text backgroundColor="#c4b5fd" color="black" bold>
+        {" ⌬ subagent "}
+      </Text>
+      <Text color="#c4b5fd">{`  ${activity.task}`}</Text>
+      <Text dimColor>{`   iter ${activity.iter}  ·  ${seconds}s`}</Text>
     </Box>
   );
 }

@@ -698,27 +698,34 @@ function StreamingAssistant({ event }: { event: DisplayEvent }) {
   const preFirstByte = !event.text && !event.reasoning && !toolCallBuild;
   const reasoningOnly = !event.text && !!event.reasoning && !toolCallBuild;
   const toolCallOnly = !event.text && !event.reasoning && !!toolCallBuild;
+  // Phase pill — solid bg color per phase so the user reads
+  // "what's happening" at a glance from across the screen.
+  let pillBg: string;
+  let pillText: string;
   let label: string;
-  let labelColor: "yellow" | "cyan" | "green" | "magenta" | undefined;
   if (preFirstByte) {
+    pillBg = "#fbbf24"; // amber
+    pillText = "WAITING";
     label = "request sent · waiting for server";
-    labelColor = "yellow";
   } else if (reasoningOnly) {
-    label = `R1 reasoning · ${event.reasoning?.length ?? 0} chars of thought`;
-    labelColor = "cyan";
+    pillBg = "#c4b5fd"; // violet
+    pillText = "THINKING";
+    label = `${event.reasoning?.length ?? 0} chars of thought`;
   } else if (toolCallOnly) {
-    label = `assembling tool call${formatToolCallIndex(toolCallBuild)} <${toolCallBuild.name}> · ${toolCallBuild.chars} chars of arguments${formatReadyTail(toolCallBuild)}`;
-    labelColor = "magenta";
+    pillBg = "#f0abfc"; // fuchsia
+    pillText = "DISPATCH";
+    label = `assembling${formatToolCallIndex(toolCallBuild)} <${toolCallBuild.name}> · ${toolCallBuild.chars} chars${formatReadyTail(toolCallBuild)}`;
   } else {
-    const parts: string[] = [`writing response · ${event.text.length} chars`];
-    if (event.reasoning) parts.push(`after ${event.reasoning.length} chars of reasoning`);
+    pillBg = "#86efac"; // green
+    pillText = "WRITING";
+    const parts: string[] = [`${event.text.length} chars`];
+    if (event.reasoning) parts.push(`after ${event.reasoning.length} reasoning`);
     if (toolCallBuild) {
       parts.push(
-        `building tool call${formatToolCallIndex(toolCallBuild)} <${toolCallBuild.name}> · ${toolCallBuild.chars} chars${formatReadyTail(toolCallBuild)}`,
+        `tool${formatToolCallIndex(toolCallBuild)} <${toolCallBuild.name}> ${toolCallBuild.chars}c${formatReadyTail(toolCallBuild)}`,
       );
     }
     label = parts.join(" · ");
-    labelColor = "green";
   }
   return (
     <Box flexDirection="column" marginTop={1}>
@@ -726,36 +733,50 @@ function StreamingAssistant({ event }: { event: DisplayEvent }) {
         <PulsingAssistantGlyph />
         <Text>{"  "}</Text>
         <Pulse />
-        <Text color={labelColor}>{` ${label} `}</Text>
+        <Text> </Text>
+        <Text backgroundColor={pillBg} color="black" bold>
+          {` ${pillText} `}
+        </Text>
+        <Text dimColor>{`  ${label}  `}</Text>
         <Elapsed />
       </Box>
       {reasoningTail ? (
-        <Text dimColor italic>
-          ↳ thinking: {reasoningTail}
-        </Text>
+        <Box paddingLeft={3}>
+          <Text color="#c4b5fd" italic dimColor>
+            ↳ {reasoningTail}
+          </Text>
+        </Box>
       ) : null}
       {tail ? (
-        <Text dimColor>▸ {tail}</Text>
+        <Box paddingLeft={3}>
+          <Text dimColor>▸ {tail}</Text>
+        </Box>
       ) : preFirstByte ? (
-        // Non-dim yellow: first-time users misread the dim version as
+        // Non-dim amber: first-time users misread the dim version as
         // "app frozen". The reassurance has to be VISIBLE to do its job.
-        <Text color="yellow" italic>
-          {"  waiting for first byte — this is normal, typically 5-60s depending on model + load"}
-        </Text>
+        <Box paddingLeft={3}>
+          <Text color="#fbbf24" italic>
+            {"waiting for first byte — typical 5–60s depending on model + load"}
+          </Text>
+        </Box>
       ) : reasoningOnly ? (
-        <Text color="yellow" italic>
-          {
-            "  R1 is thinking before it speaks — body text arrives when reasoning finishes (typically 20-90s, this is normal)"
-          }
-        </Text>
+        <Box paddingLeft={3}>
+          <Text color="#c4b5fd" italic>
+            {"R1 thinks before it speaks — body text arrives when reasoning finishes (20–90s)"}
+          </Text>
+        </Box>
       ) : toolCallOnly ? (
-        <Text color="magenta" italic>
-          {"  tool-call arguments streaming — the model is about to dispatch a tool"}
-        </Text>
+        <Box paddingLeft={3}>
+          <Text color="#f0abfc" italic>
+            {"tool-call arguments streaming — about to dispatch"}
+          </Text>
+        </Box>
       ) : event.reasoning ? (
-        <Text color="yellow" italic>
-          {"  R1 still reasoning — body text or tool call arrives when thinking finishes"}
-        </Text>
+        <Box paddingLeft={3}>
+          <Text color="#fbbf24" italic>
+            {"R1 still reasoning — body text or tool call arrives when thinking finishes"}
+          </Text>
+        </Box>
       ) : null}
     </Box>
   );
