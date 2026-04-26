@@ -5,7 +5,6 @@ import { DEEPSEEK_CONTEXT_TOKENS, DEFAULT_CONTEXT_TOKENS } from "../../telemetry
 import type { SessionSummary } from "../../telemetry.js";
 import { VERSION } from "../../version.js";
 import { COLOR, GRADIENT } from "./theme.js";
-import { useTick } from "./ticker.js";
 
 const WORDMARK_LETTERS: ReadonlyArray<string> = ["R", "E", "A", "S", "O", "N", "I", "X"];
 
@@ -21,29 +20,29 @@ const WORDMARK_LETTERS: ReadonlyArray<string> = ["R", "E", "A", "S", "O", "N", "
  * to feel alive. Truecolor terminals get the smooth flow; 8-color
  * fallbacks just see all-cyan, which is still legible.
  */
-function Wordmark({ busy, animate }: { busy: boolean; animate: boolean }) {
-  const tick = useTick();
-  // Bold pulse on the brand mark — kept even when animations are
-  // suppressed because it's just a single-cell bold toggle, no
-  // re-rendered text width that could wrap.
-  const pulsePeriod = busy ? 5 : 12;
-  const bright = animate ? Math.floor(tick / pulsePeriod) % 2 === 0 : true;
-  // Gradient flow. Higher value = slower flow. When `animate` is
-  // false (narrow terminal — wrapping risk) we freeze the offset
-  // at 0 so re-renders don't pile up ghost rows from miscounted
-  // erases.
-  const rotateEvery = busy ? 2 : 4;
-  const offset = animate ? Math.floor(tick / rotateEvery) : 0;
-  const colorAt = (i: number) =>
-    GRADIENT[(((i + offset) % GRADIENT.length) + GRADIENT.length) % GRADIENT.length]!;
+function Wordmark({
+  busy: _busy,
+  animate: _animate,
+}: {
+  busy: boolean;
+  animate: boolean;
+}) {
+  // Static gradient. The brand sweep teal → fuchsia is precomputed
+  // once per render — no useTick subscription, no per-tick
+  // re-render. Earlier versions flowed the colors over time, but
+  // the per-tick re-render interleaved badly with terminal resize
+  // (Ink's eraseLines misjudges row count when bars / wide text
+  // wrap, ghost frames stack). Keeping this static eliminates the
+  // multiplier; resize artifacts at most leave a single stale
+  // frame instead of N.
   return (
     <Text>
-      <Text color={colorAt(0)} bold={bright}>
+      <Text color={GRADIENT[0]} bold>
         ◈
       </Text>
       <Text> </Text>
       {WORDMARK_LETTERS.map((letter, i) => (
-        <Text key={letter} color={colorAt(i + 1)} bold>
+        <Text key={letter} color={GRADIENT[i % GRADIENT.length]} bold>
           {letter}
         </Text>
       ))}
@@ -158,47 +157,33 @@ export function StatsPanel({
   // actually had a chance to build, we flip to the live gradient.
   const coldStart = summary.turns <= COLD_START_TURNS;
 
-  // The two decorative gradient rules (top + bottom) frame the panel
-  // as one visual unit instead of leaving the wordmark floating in
-  // the void. Width tracks the terminal so the bar always stretches
-  // edge-to-edge; falls back to 78 cells in tests / no-stdout.
-  const ruleWidth = Math.max(20, columns - 2);
-  // Animation gate. Re-rendering every tick is fine when nothing in
-  // the live region wraps — Ink's eraseLines counts visible rows
-  // accurately. But at narrow widths the header / rules / pills
-  // wrap, Ink miscounts, and ghost rows pile up on every tick = the
-  // "screen flashing" symptom users see. We suppress all live-
-  // region animation below a safe threshold so static rendering can
-  // still look good without the churn.
-  const animate = columns >= 100;
+  // No gradient bars, no animation. Earlier versions had truecolor
+  // gradient rules top+bottom and a tick-driven wordmark/bar flow,
+  // but those are exactly the elements Ink's eraseLines miscounts
+  // on resize: ~100-char gradient strings wrap 2-3 visual rows at
+  // narrow widths, the per-tick re-render writes new frames before
+  // the stale rows are erased, and ghost panels stack vertically
+  // (the user-reported "刷屏" / multi-frame artifact). Fixed-row
+  // panel + no per-tick churn keeps Ink's row math honest.
   return (
-    // Borderless layout: no `borderStyle`, no rounded box. Bordered
-    // Boxes were the most visible amplifier of Ink's eraseLines
-    // miscount on Windows terminals. Visual weight here comes from
-    // truecolor gradient rules at the top and bottom (rendered as
-    // pure Text so they never trigger the eraseLines bug), the
-    // animated wordmark + pill row, and a soft inner padding.
     <Box flexDirection="column" paddingX={1} marginBottom={1}>
-      <GradientRule width={ruleWidth} animate={animate} />
-      <Box marginTop={1}>
-        <Header
-          model={model}
-          prefixHash={prefixHash}
-          harvestOn={harvestOn}
-          branchOn={branchOn}
-          branchBudget={branchBudget ?? 1}
-          reasoningEffort={reasoningEffort}
-          planMode={planMode}
-          editMode={editMode}
-          turns={summary.turns}
-          updateAvailable={updateAvailable}
-          narrow={narrow}
-          busy={busy ?? false}
-          proArmed={proArmed ?? false}
-          escalated={escalated ?? false}
-          animate={animate}
-        />
-      </Box>
+      <Header
+        model={model}
+        prefixHash={prefixHash}
+        harvestOn={harvestOn}
+        branchOn={branchOn}
+        branchBudget={branchBudget ?? 1}
+        reasoningEffort={reasoningEffort}
+        planMode={planMode}
+        editMode={editMode}
+        turns={summary.turns}
+        updateAvailable={updateAvailable}
+        narrow={narrow}
+        busy={busy ?? false}
+        proArmed={proArmed ?? false}
+        escalated={escalated ?? false}
+        animate={false}
+      />
       {narrow ? (
         <StackedMetrics
           summary={summary}
@@ -216,51 +201,6 @@ export function StatsPanel({
           coldStart={coldStart}
         />
       )}
-      <Box marginTop={1}>
-        <GradientRule width={ruleWidth} thin animate={animate} />
-      </Box>
-    </Box>
-  );
-}
-
-/**
- * One-line gradient bar spanning the panel width. `thin` swaps the
- * solid block for a half-block so the bottom of the panel is
- * visually quieter than the top — top reads as "header band", bottom
- * reads as "section close." Colors flow over time (one cell every
- * ~720 ms) so the panel feels alive without being twitchy. Each
- * cell renders as its own Text so Ink's runtime can color each
- * character independently; this is the pattern the wordmark uses
- * too.
- */
-function GradientRule({
-  width,
-  thin,
-  animate,
-}: {
-  width: number;
-  thin?: boolean;
-  animate: boolean;
-}) {
-  const tick = useTick();
-  // When animation is suppressed (narrow terminal) freeze offset
-  // so the bar still gets the gradient sweep but doesn't re-render.
-  const offset = animate ? Math.floor(tick / 6) : 0;
-  const ch = thin ? "▁" : "▄";
-  const len = GRADIENT.length;
-  return (
-    <Box>
-      {Array.from({ length: width }, (_, i) => {
-        const t = width === 1 ? 0 : (i * (len - 1)) / (width - 1);
-        const idx = (Math.round(t) + offset) % len;
-        const color = GRADIENT[((idx % len) + len) % len]!;
-        return (
-          // biome-ignore lint/suspicious/noArrayIndexKey: fixed-width gradient cells never reorder
-          <Text key={`grule-${i}`} color={color}>
-            {ch}
-          </Text>
-        );
-      })}
     </Box>
   );
 }

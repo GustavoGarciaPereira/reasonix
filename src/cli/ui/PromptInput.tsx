@@ -13,7 +13,6 @@ import {
 } from "./paste-sentinels.js";
 import { type Segment, buildViewport, stringCells } from "./prompt-viewport.js";
 import { GRADIENT } from "./theme.js";
-import { useTick } from "./ticker.js";
 
 /**
  * Visual anchor: a left vertical rule (▎ + space) running down every
@@ -184,23 +183,15 @@ export function PromptInput({
 
   const lines = value.length > 0 ? value.split("\n") : [""];
   const accentColor = disabled ? "gray" : "cyan";
-  // Animation gate. Below ~100 cols a typed line plus prefix can
-  // wrap; Ink's eraseLines miscounts on wrap and ghost rows pile up
-  // every tick. Suppress the bar gradient + cursor blink when
-  // narrow so the prompt renders statically — same fix the
-  // StatsPanel uses on its rules.
-  const animate = !disabled && cols >= 100;
-  const tick = useTick();
-  const barOffset = animate ? Math.floor(tick / 6) : 0;
+  // Static bar + static cursor. Earlier versions flowed the bar
+  // gradient and blinked the cursor via the global ticker; both
+  // drove per-tick re-renders that interleaved badly with terminal
+  // resize (Ink's eraseLines miscounts logical vs visual rows on
+  // wrap, ghost frames stack). The bar still gets a gradient — just
+  // a fixed sweep based on row index, no time component.
   const barColorAt = (rowIdx: number): string =>
-    disabled
-      ? "gray"
-      : GRADIENT[(((rowIdx + barOffset) % GRADIENT.length) + GRADIENT.length) % GRADIENT.length]!;
-  // Cursor blink — toggles every 4 ticks (~480 ms) so the prompt
-  // looks alive at rest. Cursor stays solid while disabled (busy
-  // turn) or narrow (anti-flash) so the screen reads as frozen,
-  // not dead.
-  const cursorVisible = animate ? Math.floor(tick / 4) % 2 === 0 : true;
+    disabled ? "gray" : GRADIENT[((rowIdx % GRADIENT.length) + GRADIENT.length) % GRADIENT.length]!;
+  const cursorVisible = true;
   const { line: cursorLine, col: cursorCol } = lineAndColumn(value, cursor);
 
   // Big-buffer mitigation: if the buffer has many logical lines,
