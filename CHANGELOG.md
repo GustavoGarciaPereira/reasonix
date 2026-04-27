@@ -3,6 +3,118 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] — 2026-04-27
+
+**Headline:** Local semantic search lands as an opt-in pillar — Ollama-
+backed embedding index, `reasonix index` CLI with progress spinner, a
+`/semantic` slash for status, and bilingual (zh/en) prompts. Plus a
+trio of subagent abort races that made `Esc` silently fail to stop a
+running subagent.
+
+### Added — Pillar 5: local semantic search
+
+- **`reasonix index`** — new CLI command that walks the project, line-
+  windows source files, embeds via Ollama (`nomic-embed-text` by
+  default, ~274 MB once), and persists a JSONL index at
+  `.reasonix/semantic/`. Incremental by default (mtime-based), with
+  `--rebuild` for a full wipe. Per-chunk failures are logged + skipped
+  so one bad file doesn't kill a 30-minute build.
+- **Preflight prompts** — detects missing Ollama binary / daemon /
+  model and offers to start `ollama serve` or `ollama pull <model>`
+  with `[Y/n]` confirms. `--yes` for scripts. Non-TTY exits cleanly
+  with a remediation hint.
+- **TTY progress spinner** — Braille `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` ticks every
+  120ms via `setInterval`, INDEPENDENT of progress events. Builds
+  that take 30+ seconds never look hung. Non-TTY mode keeps phase
+  lines + heartbeats for parseable CI logs.
+- **Chunker safety** — `maxChunkChars` cap (default 4000 ≈ 1000
+  tokens) with line-boundary splitting for oversized windows and
+  hard-truncation for single overlong lines. Fixes Ollama 500 "the
+  input length exceeds the context length" on minified / dense files.
+- **`semantic_search` tool** — registered in `reasonix code` only when
+  an index exists. Tool description is now directive ("FIRST CHOICE
+  for descriptive queries"); the code-mode system prompt grows a
+  `# Search routing` fragment when the tool is registered, telling
+  the model to prefer semantic_search for intent-style questions
+  and fall back to grep for exact tokens.
+- **`/semantic` slash** — shows status (built? Ollama installed?
+  daemon up?) plus how-to-enable hints. Fire-and-forget pattern, same
+  as `/kill` — sync placeholder, async post via `ctx.postInfo`.
+- **Bilingual UI** — `src/index/semantic/i18n.ts` with EN/ZH dicts
+  for every preflight + `/semantic` + progress label. Locale
+  detection: `REASONIX_LANG` override → `LANG`/`LC_ALL`/`LC_MESSAGES`
+  (Unix) → `Intl.DateTimeFormat` (Windows fallback) → `en`. Tool
+  descriptions and CLI `--help` stay English on purpose (model-facing
+  text aligns with training distribution; commander's --help is
+  registered once at boot).
+- **Startup is silent** — no auto-prompt on `reasonix code` launch.
+  If an index exists, the tool registers; otherwise the bootstrap
+  is a no-op. Discovery happens via `/semantic` when the user is
+  curious, or via the explicit `reasonix index` command.
+
+### Fixed — subagent `Esc` abort races
+
+- **`addEventListener("abort", …)` doesn't replay aborts** — DOM
+  semantics: an already-aborted signal won't fire the abort event
+  again, so a parent that aborted before `spawnSubagent` attached
+  its listener silently lost the cancel. Sync-check `.aborted` at
+  attach and forward immediately to `childLoop.abort()`.
+- **`step()` was overwriting aborted state** — at the top of
+  `step()` we reassign `_turnAbort = new AbortController()`. If
+  `loop.abort()` had been called BEFORE `step()` ran, the prior
+  aborted controller was discarded and the fresh one started clean.
+  Carry the aborted bit forward so the iter-0 check still bails.
+- **`forcedSummary` was treated as success** — when the loop aborted
+  it yielded a synthetic `assistant_final` with `forcedSummary: true`
+  and content `"[aborted by user (Esc) — no summary produced.]"`.
+  The subagent stuffed that into `final` and returned `success: true`,
+  so `/skill` cheerfully reported "subagent finished" with the abort
+  message as the answer. Now `forcedSummary` routes to `errorMessage`
+  → `success: false` → caller renders the error.
+
+### Added — docs / website
+
+- **GitHub Pages site under `docs/`** — bilingual landing page (auto-
+  detect via `navigator.language`, manual EN/中文 toggle, persisted
+  per-browser), brand-gradient dark theme, hero terminal animation
+  that mirrors the real TUI rendering primitives (◇/◆ role glyphs,
+  yellow tool pills, rounded cyan EditBlockRow with `- old` red /
+  `+ new` green diff lines, info-row pending/applied status).
+- **`README.zh-CN.md`** — full Chinese mirror of `README.md`. Both
+  READMEs now carry a language switcher header at the top.
+
+### Tests (+27, 1441 → 1468)
+
+- `tests/semantic-chunker.test.ts` — line-window splitting, overlap,
+  forward-slash path normalization, NUL-byte sniff; the new
+  `chunkText` cap behavior (multi-line split + hard-truncate-overlong-
+  line + idempotent passthrough).
+- `tests/semantic-store.test.ts` — JSONL roundtrip, cosine ranking,
+  minScore threshold, dim-mismatch refusal, model-mismatch refusal,
+  remove + wipe, fileMtimes.
+- `tests/semantic-embed-tolerant.test.ts` — `embedAll` returns
+  `Array<Float32Array | null>` on per-chunk error (mocked Ollama 500),
+  abort still throws globally, all-fail surface, progress fires once
+  per chunk regardless of outcome.
+- `tests/semantic-i18n.test.ts` — locale detection precedence,
+  override env var, placeholder substitution, ZH dict.
+- `tests/semantic-bootstrap.test.ts` — registers when index exists,
+  silent skip otherwise (no startup prompt).
+- `tests/semantic-slash.test.ts` — `/semantic` status renderer,
+  enabled / not-built / Chinese-locale paths.
+- `tests/semantic-launcher.test.ts` — `findOllamaBinary` contract.
+- `tests/code-prompt.test.ts` — search-routing fragment is absent by
+  default and present + ordered before .gitignore when the flag is on.
+- `tests/subagent.test.ts` — regression: parent signal already aborted
+  at dispatch time (race we previously dropped on the floor).
+
+### Refactored
+
+- **`src/code/prompt.ts`** — `codeSystemPrompt(rootDir, opts?)` grew
+  a `hasSemanticSearch` flag; the routing fragment is appended only
+  when the tool is actually registered. Cache prefix stays stable per
+  session because the flag is captured at launch.
+
 ## [0.6.0] — 2026-04-24
 
 **Headline:** Cost control becomes a first-class pillar. Default flips
