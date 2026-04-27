@@ -7,6 +7,7 @@ import { applyMemoryStack } from "../user-memory.js";
 import { chatCommand } from "./commands/chat.js";
 import { codeCommand } from "./commands/code.js";
 import { diffCommand } from "./commands/diff.js";
+import { indexCommand } from "./commands/index.js";
 import { mcpInspectCommand } from "./commands/mcp-inspect.js";
 import { mcpListCommand } from "./commands/mcp.js";
 import { replayCommand } from "./commands/replay.js";
@@ -326,6 +327,31 @@ program
   .action(async (opts: { dryRun?: boolean }) => {
     await updateCommand({ dryRun: !!opts.dryRun });
   });
+
+program
+  .command("index")
+  .description(
+    "Build (or incrementally refresh) a local semantic search index for the project so `reasonix code` can answer 'where do we…' questions by meaning, not just by token. Uses Ollama as the embedding backend; missing daemon / model is offered to the user with a confirm prompt.",
+  )
+  .option("--rebuild", "Wipe and rebuild from scratch")
+  .option("--model <name>", "Embedding model (default: nomic-embed-text)")
+  .option("--dir <path>", "Project root to index (default: cwd)")
+  .option("--ollama-url <url>", "Override Ollama base URL (default: http://localhost:11434)")
+  .option(
+    "-y, --yes",
+    "Skip preflight prompts — auto-start the daemon and pull the model if missing (use in scripts)",
+  )
+  .action(
+    async (opts: {
+      rebuild?: boolean;
+      model?: string;
+      dir?: string;
+      ollamaUrl?: string;
+      yes?: boolean;
+    }) => {
+      await indexCommand(opts);
+    },
+  );
 
 program.parseAsync(process.argv).catch((err) => {
   console.error(err);

@@ -100,6 +100,10 @@ export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
   { cmd: "sessions", summary: "list saved sessions (current marked with ▸)" },
   { cmd: "forget", summary: "delete the current session from disk" },
   { cmd: "setup", summary: "reminds you to exit and run `reasonix setup`" },
+  {
+    cmd: "semantic",
+    summary: "show semantic_search status — built? Ollama installed? how to enable",
+  },
   { cmd: "clear", summary: "clear visible scrollback only (log/context kept)" },
   { cmd: "new", summary: "start a fresh conversation (clear context + scrollback)" },
   {

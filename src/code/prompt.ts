@@ -210,8 +210,40 @@ ${TUI_FORMATTING_RULES}
  * Stacking order (stable for cache prefix):
  *   base prompt → REASONIX.md → global MEMORY.md → project MEMORY.md → .gitignore
  */
-export function codeSystemPrompt(rootDir: string): string {
-  const withMemory = applyMemoryStack(CODE_SYSTEM_PROMPT, rootDir);
+/**
+ * Routing fragment appended to the code-mode system prompt when the
+ * project has a semantic index built. Without this nudge the model
+ * defaults to grep (`search_content`) for every query — semantic
+ * search loses the "first attempt" battle on token-rich phrasings
+ * even when the question is descriptive.
+ *
+ * Kept short and explicit: rules over rationale. The model that needs
+ * this hint isn't reading three paragraphs of "why semantic search
+ * is good"; it needs a clear if/else.
+ */
+const SEMANTIC_SEARCH_ROUTING = `
+
+# Search routing
+
+You have BOTH \`semantic_search\` (vector index) and \`search_content\` (literal grep).
+
+- **Descriptive queries** ("where do we handle X", "which file owns Y", "how does Z work", "find the logic that does …", "the code responsible for …") → call \`semantic_search\` FIRST. It indexes the project by meaning, so it finds the right file even when your phrasing shares no tokens with the code.
+- **Exact-token queries** (a specific identifier, regex, or "find every call to foo") → call \`search_content\`.
+
+If \`semantic_search\` returns nothing useful (low scores, off-topic), THEN fall back to \`search_content\`. Don't go the other way — grepping a paraphrased question wastes turns.`;
+
+export interface CodeSystemPromptOptions {
+  /** True when semantic_search is registered for this run. Adds an
+   *  explicit routing fragment so the model picks it for intent-style
+   *  queries instead of defaulting to grep. */
+  hasSemanticSearch?: boolean;
+}
+
+export function codeSystemPrompt(rootDir: string, opts: CodeSystemPromptOptions = {}): string {
+  const base = opts.hasSemanticSearch
+    ? `${CODE_SYSTEM_PROMPT}${SEMANTIC_SEARCH_ROUTING}`
+    : CODE_SYSTEM_PROMPT;
+  const withMemory = applyMemoryStack(base, rootDir);
   const gitignorePath = join(rootDir, ".gitignore");
   if (!existsSync(gitignorePath)) return withMemory;
   let content: string;

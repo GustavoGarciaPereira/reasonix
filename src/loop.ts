@@ -873,7 +873,18 @@ export class CacheFirstLoop {
     // Fresh controller for this turn: the prior step's signal has
     // already fired (or stayed clean); either way we don't want its
     // state to bleed into the new turn.
+    //
+    // Edge case — `loop.abort()` may have been called BEFORE step()
+    // ran (race: caller fires abort during async setup, but step()
+    // hadn't been awaited yet). Naively reassigning _turnAbort would
+    // silently drop that abort. Forward the prior aborted state into
+    // the fresh controller so the iter-0 check still bails out. This
+    // is load-bearing for subagents: the parent's onParentAbort
+    // listener calls childLoop.abort(), which can fire before
+    // childLoop.step() has reached the `for await` line below.
+    const carryAbort = this._turnAbort.signal.aborted;
     this._turnAbort = new AbortController();
+    if (carryAbort) this._turnAbort.abort();
     const signal = this._turnAbort.signal;
     if (armedConsumed) {
       yield {

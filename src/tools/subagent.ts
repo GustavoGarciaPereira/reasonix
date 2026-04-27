@@ -272,8 +272,25 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
     stream: false,
   });
 
+  // Wire parent-abort → child-abort. Two pitfalls we have to handle:
+  //
+  //   1. `addEventListener("abort", ...)` does NOT fire for a signal
+  //      that's already aborted (the abort event has already been
+  //      dispatched once and `once: true` is moot). If the parent
+  //      aborted between dispatch entry and our listener attach,
+  //      the listener stays silent forever and the child runs free.
+  //      → Check `.aborted` synchronously and forward immediately.
+  //
+  //   2. childLoop.step() reassigns its internal _turnAbort at the
+  //      top of step(). loop.ts forwards prior aborted state into
+  //      the fresh controller, so abort() called BEFORE step() runs
+  //      still kills the new step at iter 0.
   const onParentAbort = () => childLoop.abort();
-  opts.parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+  if (opts.parentSignal?.aborted) {
+    childLoop.abort();
+  } else {
+    opts.parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+  }
 
   let final = "";
   let errorMessage: string | undefined;
@@ -292,7 +309,19 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
         });
       }
       if (ev.role === "assistant_final") {
-        final = ev.content ?? "";
+        // `forcedSummary: true` is the loop's signal that this isn't
+        // a real model answer — it's an abort placeholder, a budget-
+        // exhaustion summary, or a context-guard fallback. Treating
+        // them as success means parent agents would happily render
+        // "[aborted by user (Esc) — no summary produced.]" as the
+        // subagent's actual answer. Surface it as an error instead so
+        // `success: false` reaches the caller and `/skill` doesn't
+        // pretend the run completed normally.
+        if (ev.forcedSummary) {
+          errorMessage = ev.content?.trim() || "subagent ended without producing an answer";
+        } else {
+          final = ev.content ?? "";
+        }
       }
       if (ev.role === "error") {
         errorMessage = ev.error ?? "subagent error";

@@ -54,4 +54,31 @@ describe("codeSystemPrompt", () => {
     // pinned .gitignore block is the authoritative denylist.
     expect(CODE_SYSTEM_PROMPT).toMatch(/dependency.*build.*VCS|skip/i);
   });
+
+  describe("semantic_search routing fragment", () => {
+    it("is absent by default (no index registered)", () => {
+      const out = codeSystemPrompt(root);
+      expect(out).not.toMatch(/# Search routing/);
+    });
+
+    it("is appended when hasSemanticSearch is true", () => {
+      const out = codeSystemPrompt(root, { hasSemanticSearch: true });
+      expect(out).toMatch(/# Search routing/);
+      expect(out).toMatch(/semantic_search/);
+      expect(out).toMatch(/search_content/);
+      expect(out).toMatch(/Descriptive queries/);
+    });
+
+    it("places the routing fragment BEFORE the .gitignore section", () => {
+      // .gitignore content can change between sessions; the routing
+      // fragment must sit before it so the cacheable portion of the
+      // prompt remains contiguous.
+      writeFileSync(join(root, ".gitignore"), "node_modules\n");
+      const out = codeSystemPrompt(root, { hasSemanticSearch: true });
+      const routingAt = out.indexOf("# Search routing");
+      const gitignoreAt = out.indexOf("# Project .gitignore");
+      expect(routingAt).toBeGreaterThan(0);
+      expect(gitignoreAt).toBeGreaterThan(routingAt);
+    });
+  });
 });

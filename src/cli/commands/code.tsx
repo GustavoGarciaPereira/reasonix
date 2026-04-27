@@ -20,6 +20,7 @@
 
 import { basename, resolve } from "node:path";
 import { loadEditMode, loadProjectShellAllowed } from "../../config.js";
+import { bootstrapSemanticSearchInCodeMode } from "../../index/semantic/tool.js";
 import { sanitizeName } from "../../session.js";
 import { ToolRegistry } from "../../tools.js";
 import { registerChoiceTool } from "../../tools/choice.js";
@@ -108,8 +109,16 @@ export async function codeCommand(opts: CodeOptions = {}): Promise<void> {
   // re-registration would shadow the no-runner version, which works
   // (last write wins) but obscures the wiring.
 
+  // Bootstrap semantic_search. Silent: registers the tool when an
+  // on-disk index already exists, skips entirely otherwise. Setup
+  // happens via the explicit `reasonix index` command — never
+  // by surprise on launch.
+  const semantic = await bootstrapSemanticSearchInCodeMode(tools, rootDir);
+
   process.stderr.write(
-    `▸ reasonix code: rooted at ${rootDir}, session "${session ?? "(ephemeral)"}" · ${tools.size} native tool(s)\n`,
+    `▸ reasonix code: rooted at ${rootDir}, session "${session ?? "(ephemeral)"}" · ${tools.size} native tool(s)${
+      semantic.enabled ? " · semantic_search on" : ""
+    }\n`,
   );
 
   // Belt-and-suspenders cleanup: even though spawn(detached:false)
@@ -128,7 +137,7 @@ export async function codeCommand(opts: CodeOptions = {}): Promise<void> {
   await chatCommand({
     model: opts.model ?? "deepseek-v4-flash",
     harvest: opts.harvest ?? false,
-    system: codeSystemPrompt(rootDir),
+    system: codeSystemPrompt(rootDir, { hasSemanticSearch: semantic.enabled }),
     transcript: opts.transcript,
     session,
     seedTools: tools,

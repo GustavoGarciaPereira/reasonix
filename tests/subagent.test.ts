@@ -329,6 +329,46 @@ describe("registerSubagentTool", () => {
     const parsed = JSON.parse(out);
     expect(parsed.success).toBe(false);
   });
+
+  it("honors a parentSignal that was already aborted at dispatch time", async () => {
+    // Race we previously dropped on the floor: parent.abort() fires
+    // before spawn_subagent's listener attach runs. addEventListener
+    // doesn't replay abort events for already-aborted signals, so the
+    // listener stayed silent forever and the child ran free until it
+    // hit its iter budget. Fix: synchronously check `.aborted` at
+    // attach and forward immediately to childLoop.abort(), and have
+    // step() carry the aborted state across its _turnAbort reset.
+    const parent = new ToolRegistry();
+    let fetchCalls = 0;
+    const client = new DeepSeekClient({
+      apiKey: "sk-test",
+      // If the abort propagation works, fetch is never called — the
+      // child loop bails at iter 0 because its signal is already
+      // aborted before the API call site is reached.
+      fetch: vi.fn(async () => {
+        fetchCalls++;
+        return new Response(
+          JSON.stringify({
+            choices: [
+              { index: 0, message: { role: "assistant", content: "late" }, finish_reason: "stop" },
+            ],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as any,
+      retry: { maxAttempts: 1 },
+    });
+    registerSubagentTool(parent, { client });
+    const ctrl = new AbortController();
+    ctrl.abort(); // already aborted before dispatch is even called
+    const out = await parent.dispatch("spawn_subagent", JSON.stringify({ task: "x" }), {
+      signal: ctrl.signal,
+    });
+    const parsed = JSON.parse(out);
+    expect(parsed.success).toBe(false);
+    expect(fetchCalls).toBe(0);
+  });
 });
 
 describe("forkRegistryExcluding", () => {
