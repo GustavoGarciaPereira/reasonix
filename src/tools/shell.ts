@@ -328,7 +328,16 @@ export async function runCommand(
       reject(err);
       return;
     }
-    let buf = "";
+    // Collect raw Buffer chunks rather than decoding incrementally —
+    // a multi-byte sequence can land split across chunks, and a naïve
+    // chunk.toString() corrupts it before the second half arrives.
+    // We decode once at close time, where smartDecodeOutput can also
+    // sniff non-UTF-8 codepages cleanly. The byte cap mirrors the
+    // prior char cap (2× maxChars worth) so a chatty process can't
+    // OOM us.
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    const byteCap = maxChars * 2 * 4; // worst-case 4 bytes/char for utf-8/gbk
     let timedOut = false;
     const killTimer = setTimeout(() => {
       timedOut = true;
@@ -338,11 +347,16 @@ export async function runCommand(
     opts.signal?.addEventListener("abort", onAbort, { once: true });
 
     const onData = (chunk: Buffer | string) => {
-      buf += chunk.toString();
-      // Soft cap: we let the process keep running (killing early could
-      // hide a real failure), but we stop growing the buffer past 2×
-      // the cap so a chatty test can't OOM us.
-      if (buf.length > maxChars * 2) buf = `${buf.slice(0, maxChars * 2)}`;
+      const b = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      if (totalBytes >= byteCap) return;
+      const remaining = byteCap - totalBytes;
+      if (b.length > remaining) {
+        chunks.push(b.subarray(0, remaining));
+        totalBytes = byteCap;
+      } else {
+        chunks.push(b);
+        totalBytes += b.length;
+      }
     };
     child.stdout?.on("data", onData);
     child.stderr?.on("data", onData);
@@ -354,6 +368,8 @@ export async function runCommand(
     child.on("close", (code) => {
       clearTimeout(killTimer);
       opts.signal?.removeEventListener("abort", onAbort);
+      const merged = Buffer.concat(chunks);
+      const buf = smartDecodeOutput(merged);
       const output =
         buf.length > maxChars
           ? `${buf.slice(0, maxChars)}\n\n[… truncated ${buf.length - maxChars} chars …]`
@@ -361,6 +377,56 @@ export async function runCommand(
       resolve({ exitCode: code, output, timedOut });
     });
   });
+}
+
+/**
+ * Decode a child-process output buffer with codepage fallback. The
+ * default UTF-8 path handles 99% of Linux / Mac and any process we
+ * already coerced to UTF-8 (Python via PYTHONIOENCODING, PowerShell
+ * via the OutputEncoding prelude, cmd.exe builtins via chcp 65001).
+ *
+ * On Windows, two cases still leak non-UTF-8 bytes through that
+ * pipeline:
+ *
+ *   1. `cmd.exe`'s OWN error messages (e.g. "'sed' is not recognized
+ *      as an internal or external command") come from a localized
+ *      resource DLL and ignore the active code page, so chcp 65001
+ *      doesn't help. On Chinese Windows the bytes are CP936/GBK.
+ *
+ *   2. Native Windows EXEs that hardcode the system locale for stderr
+ *      (older sed/grep ports, MS toolchain prompts).
+ *
+ * We try UTF-8 strictly; if the bytes don't form valid UTF-8 we fall
+ * back to GBK on Windows (covers Simplified Chinese and most CJK
+ * Windows installs because GBK is a strict superset of ASCII and
+ * decodes Latin text identically). Better than mojibake; not a full
+ * locale-detector, but matches where the actual bug reports come
+ * from.
+ *
+ * Exported for tests.
+ */
+export function smartDecodeOutput(buf: Buffer): string {
+  if (buf.length === 0) return "";
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(buf);
+  } catch {
+    // Fall through to platform-specific fallback.
+  }
+  if (process.platform === "win32") {
+    try {
+      // TextDecoder supports gbk / gb18030 in Node 18+ via the WHATWG
+      // Encoding spec. gb18030 is the modern superset; falling back
+      // to it covers GBK byte sequences plus the rare 4-byte CJK
+      // characters that appear in newer system messages.
+      return new TextDecoder("gb18030").decode(buf);
+    } catch {
+      // Decoder unavailable in this build — fall through.
+    }
+  }
+  // Last resort: lossy UTF-8 with replacement chars. The model still
+  // gets "something happened" with the structural exit-code marker
+  // intact, which is more useful than throwing away the entire output.
+  return buf.toString("utf8");
 }
 
 /**

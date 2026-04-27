@@ -14,6 +14,7 @@ import {
   registerShellTools,
   resolveExecutable,
   runCommand,
+  smartDecodeOutput,
   tokenizeCommand,
 } from "../src/tools/shell.js";
 
@@ -667,5 +668,47 @@ describe("NeedsConfirmationError", () => {
     expect(e.message).toMatch(/STOP calling tools/i);
     expect(e.message).toMatch(/y.*run.*n.*deny/i);
     expect(e.message).not.toMatch(/apply-shell/);
+  });
+});
+
+describe("smartDecodeOutput", () => {
+  it("decodes valid UTF-8 cleanly", () => {
+    const buf = Buffer.from("hello 世界", "utf8");
+    expect(smartDecodeOutput(buf)).toBe("hello 世界");
+  });
+
+  it("returns empty string for empty input", () => {
+    expect(smartDecodeOutput(Buffer.alloc(0))).toBe("");
+  });
+
+  it("falls back to GBK on Windows for non-UTF-8 bytes", () => {
+    // "'sed' 不是内部或外部命令" — encoded in GBK (Chinese Windows
+    // cmd.exe error message). UTF-8 strict decode rejects it; on
+    // win32 we re-decode as GBK and recover the Chinese text. On
+    // other platforms we expect the lossy UTF-8 fallback string,
+    // which is fine — the bug only manifests on Chinese Windows
+    // anyway.
+    const gbk = Buffer.from([
+      0x27, 0x73, 0x65, 0x64, 0x27, 0x20, 0xb2, 0xbb, 0xca, 0xc7, 0xc4, 0xda, 0xb2, 0xbf, 0xc3,
+      0xfc, 0xc1, 0xee,
+    ]);
+    const decoded = smartDecodeOutput(gbk);
+    if (process.platform === "win32") {
+      expect(decoded).toBe("'sed' 不是内部命令");
+    } else {
+      // Non-Windows: takes the lossy UTF-8 path; assert at least
+      // the ASCII portion survives unmangled.
+      expect(decoded.startsWith("'sed' ")).toBe(true);
+    }
+  });
+
+  it("does not split a multi-byte UTF-8 sequence across decode calls", () => {
+    // The full 6-byte sequence for "你好" decodes cleanly when
+    // handed to smartDecodeOutput as a single Buffer — this is the
+    // post-collection contract. (The chunk-aware accumulator in
+    // runCommand defers decoding until close, so this case can't
+    // arise there; the test pins the single-buffer contract.)
+    const buf = Buffer.from("你好", "utf8");
+    expect(smartDecodeOutput(buf)).toBe("你好");
   });
 });

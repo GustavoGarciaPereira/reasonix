@@ -70,6 +70,12 @@ export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
     summary: "list active hooks (settings.json under .reasonix/) · reload re-reads from disk",
   },
   {
+    cmd: "cwd",
+    argsHint: "<path>",
+    summary:
+      "switch session working directory (re-registers code tools, reloads hooks; MCP servers stay)",
+  },
+  {
     cmd: "update",
     summary: "show current vs latest version + the shell command to upgrade",
   },

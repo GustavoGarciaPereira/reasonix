@@ -53,7 +53,17 @@ export interface ChatOptions {
    * Enable SEARCH/REPLACE edit-block processing after each assistant turn.
    * Set by `reasonix code`; plain `reasonix chat` leaves this off.
    */
-  codeMode?: { rootDir: string; jobs?: import("../../tools/jobs.js").JobRegistry };
+  codeMode?: {
+    rootDir: string;
+    jobs?: import("../../tools/jobs.js").JobRegistry;
+    /**
+     * `/cwd <path>` callback — re-registers every rootDir-dependent
+     * native tool against the new path. Optional so embedders that
+     * don't want live cwd switching can omit it (the slash command
+     * then falls back to non-tool updates only).
+     */
+    reregisterTools?: (rootDir: string) => void;
+  };
   /** Skip the session picker — assume "Resume" (backwards-compatible auto-continue). */
   forceResume?: boolean;
   /** Skip the session picker — assume "New" (wipe the session file and start fresh). */

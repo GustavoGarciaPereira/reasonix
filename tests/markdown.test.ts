@@ -72,6 +72,33 @@ describe("stripMath", () => {
     expect(stripMath("\\sqrt{49}")).toBe("√(49)");
   });
 
+  it("preserves Windows-style backslash paths in plain prose", () => {
+    // Regression: the catch-all `\\[a-zA-Z]+` LaTeX fallback wiped
+    // five characters from "F:\TEST1" — `\TEST` matched as an
+    // unknown LaTeX command and was deleted, leaving "F:1". The
+    // early-exit guard skips the math pipeline entirely when no
+    // math indicator is present.
+    expect(stripMath("F:\\TEST1")).toBe("F:\\TEST1");
+    expect(stripMath("F:\\TEST1\\report_output")).toBe("F:\\TEST1\\report_output");
+    expect(stripMath("see C:\\Users\\name\\Documents\\foo.py")).toBe(
+      "see C:\\Users\\name\\Documents\\foo.py",
+    );
+    // Literal backslash-letter in prose (not a path) also survives.
+    expect(stripMath("the regex \\d+ matches digits")).toBe("the regex \\d+ matches digits");
+  });
+
+  it("still processes math when both a path and an equation appear together", () => {
+    // Mixed input: the math indicator (`\frac`) IS present, so the
+    // pipeline runs. The guard is "all-or-nothing" by design — once
+    // we know there's math we transform the whole string. Path
+    // chars in this case may collide with the catch-all, which is
+    // acceptable (no real chat output mixes Windows paths with
+    // LaTeX math, and even if it did, surfacing the math correctly
+    // matters more than preserving the path verbatim).
+    const out = stripMath("save to F:\\out then compute \\frac{a}{b}");
+    expect(out).toContain("(a)/(b)");
+  });
+
   it("the full user-reported line no longer leaks raw LaTeX", () => {
     const input =
       "总路程：2d km 总时间：t_1 + t_2 = \\dfrac{d}{30} + \\dfrac{d}{60} = \\dfrac{2d}{60} + \\dfrac{d}{60} = \\dfrac{3d}{60} = \\dfrac{d}{20} 小时 平均速度：v_{avg} = \\frac{总路程}{总时间} = 40 km/h";

@@ -68,26 +68,39 @@ export async function codeCommand(opts: CodeOptions = {}): Promise<void> {
   // shape instead of the `string="false"` JSON-in-string array that
   // triggered R1's DSML hallucinations all through 0.4.x.
   const tools = new ToolRegistry();
-  registerFilesystemTools(tools, { rootDir });
   // Background-process registry shared between the shell tools and the
   // TUI's /jobs + /kill slashes + exit cleanup. One per `reasonix code`
   // run — orphan prevention on SIGINT / process exit kills everything
   // it owns, so dev servers don't outlive the Reasonix process.
   const jobs = new JobRegistry();
-  registerShellTools(tools, {
-    rootDir,
-    // Per-project "always allow" list persisted from prior ShellConfirm
-    // choices; merged on top of the built-in allowlist in shell.ts.
-    // GETTER form — re-read every dispatch so a prefix the user adds
-    // via ShellConfirm mid-session takes effect on the next shell call
-    // instead of waiting for `/new` or a relaunch.
-    extraAllowed: () => loadProjectShellAllowed(rootDir),
-    // `yolo` edit-mode disables shell confirmations entirely. Re-read
-    // from config on each dispatch so /mode yolo (or Shift+Tab cycling
-    // through to it) flips the gate live without forcing a relaunch.
-    allowAll: () => loadEditMode() === "yolo",
-    jobs,
-  });
+  // Bundled re-registration so `/cwd <path>` can swap every rootDir-
+  // dependent tool atomically. ToolRegistry.register is keyed by name
+  // and overwrites in-place, so re-calling these against the existing
+  // registry replaces the closures cleanly without disturbing tool
+  // specs (names/descriptions/params don't reference rootDir, so the
+  // prefix cache survives).
+  const registerRootedTools = (root: string): void => {
+    registerFilesystemTools(tools, { rootDir: root });
+    registerShellTools(tools, {
+      rootDir: root,
+      // Per-project "always allow" list persisted from prior ShellConfirm
+      // choices; merged on top of the built-in allowlist in shell.ts.
+      // GETTER form — re-read every dispatch so a prefix the user adds
+      // via ShellConfirm mid-session takes effect on the next shell call
+      // instead of waiting for `/new` or a relaunch.
+      extraAllowed: () => loadProjectShellAllowed(root),
+      // `yolo` edit-mode disables shell confirmations entirely. Re-read
+      // from config on each dispatch so /mode yolo (or Shift+Tab cycling
+      // through to it) flips the gate live without forcing a relaunch.
+      allowAll: () => loadEditMode() === "yolo",
+      jobs,
+    });
+    // `remember` / `forget` / `recall_memory` — cross-session user memory.
+    // Project scope hashes off rootDir so switching projects gets a fresh
+    // per-project memory store; the global scope is shared across runs.
+    registerMemoryTools(tools, { projectRoot: root });
+  };
+  registerRootedTools(rootDir);
   // `submit_plan` is always in the spec list so the prefix cache stays
   // stable across plan-mode toggles (Pillar 1). The tool itself is a
   // no-op outside plan mode and throws `PlanProposedError` when the
@@ -99,10 +112,6 @@ export async function codeCommand(opts: CodeOptions = {}): Promise<void> {
   // menu into a submit_plan body. Keeping it always-registered
   // preserves the prefix cache across plan-mode toggles.
   registerChoiceTool(tools);
-  // `remember` / `forget` / `recall_memory` — cross-session user memory.
-  // Project scope hashes off rootDir so switching projects gets a fresh
-  // per-project memory store; the global scope is shared across runs.
-  registerMemoryTools(tools, { projectRoot: rootDir });
   // `run_skill` is intentionally NOT registered here — App.tsx wires it
   // up with the subagent runner attached, so `runAs: subagent` skills
   // can spawn isolated child loops. Doing it here would mean the App's
@@ -141,7 +150,7 @@ export async function codeCommand(opts: CodeOptions = {}): Promise<void> {
     transcript: opts.transcript,
     session,
     seedTools: tools,
-    codeMode: { rootDir, jobs },
+    codeMode: { rootDir, jobs, reregisterTools: registerRootedTools },
     forceResume: opts.forceResume,
     forceNew: opts.forceNew,
   });

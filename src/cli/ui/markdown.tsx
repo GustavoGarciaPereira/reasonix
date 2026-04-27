@@ -63,7 +63,39 @@ function toSubscript(s: string): string {
   return out;
 }
 
+/**
+ * Math indicator regex — gates the LaTeX-stripping pipeline so plain
+ * prose with literal backslashes (Windows paths, escape sequences in
+ * code prose) doesn't get mauled by the catch-all `\[a-zA-Z]+ → ""`
+ * fallback at the bottom of stripMath.
+ *
+ * Without this guard, "F:\TEST1" got rendered as "F:1" because the
+ * catch-all interpreted `\TEST` as an unknown LaTeX command and
+ * deleted it. We only run the pipeline when the text actually
+ * contains math markers we recognize: $-delimited spans, `\(`/`\[`
+ * paren-delimiters, or one of the explicit LaTeX command names the
+ * pipeline knows how to translate. Anything else passes through
+ * untouched.
+ */
+const HAS_MATH_RE = new RegExp(
+  [
+    "\\$", // dollar-delimited (block or inline)
+    "\\\\[([]", // \( or \[
+    "\\\\[a-zA-Z]+\\s*\\{", // \anyCommand{...} — covers catch-all braced transforms
+    // Bare (no-brace) LaTeX commands the pipeline knows how to handle.
+    // Listed explicitly because a generic `\\[a-zA-Z]+` would also match
+    // Windows paths (`F:\TEST1`) and re-introduce the bug we're fixing.
+    "\\\\(?:cdot|times|div|pm|mp|leq|geq|neq|approx|in|notin|infty|sum|prod|int|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|phi|omega|implies|iff|to|rightarrow|leftarrow|Rightarrow|Leftarrow|ldots|cdots|quad|qquad)(?![a-zA-Z])",
+    "[\\^_]\\{", // LaTeX braced super/subscript: ^{2}, _{ij}
+    "\\^[0-9+\\-n](?![A-Za-z])", // LaTeX single-char super: ^2, ^-, ^n
+    "_[0-9+\\-](?![A-Za-z])", // LaTeX single-char sub: _1, _+, _-
+    "\\^[A-Za-z0-9+\\-]+\\^", // Pandoc super: ^2^, ^abc^
+    "(?<!~)~[A-Za-z0-9+\\-]+~(?!~)", // Pandoc sub: ~2~ (lookarounds avoid ~~strike~~)
+  ].join("|"),
+);
+
 export function stripMath(s: string): string {
+  if (!HAS_MATH_RE.test(s)) return s;
   return (
     s
       // Dollar-delimited math (KaTeX / MathJax convention). Block

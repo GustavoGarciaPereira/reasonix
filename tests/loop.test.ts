@@ -327,6 +327,63 @@ describe("CacheFirstLoop (non-streaming)", () => {
     void fetchSpy;
   });
 
+  it("does not bleed the prior turn's abort into the next step", async () => {
+    // Regression: a user pressing Esc once would put _turnAbort into
+    // an aborted state; the iter-0 abort branch handled it but didn't
+    // reset the controller. Every subsequent step() then carried the
+    // stale aborted state forward and bailed out with another
+    // "stopped without producing a summary" before any model call ran.
+    // The session was effectively dead until restart.
+    const reg = new ToolRegistry();
+    reg.register({
+      name: "probe",
+      description: "no-op",
+      parameters: { type: "object", properties: {} },
+      fn: async () => "ok",
+    });
+    const chainingToolCall = {
+      content: "",
+      tool_calls: [{ id: "c", type: "function", function: { name: "probe", arguments: "{}" } }],
+    };
+    const finalAnswer = { content: "second turn ran cleanly", tool_calls: [] };
+    const client = new DeepSeekClient({
+      apiKey: "sk-test",
+      fetch: fakeFetch([chainingToolCall, finalAnswer]) as unknown as typeof fetch,
+    });
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "s", toolSpecs: reg.specs() }),
+      tools: reg,
+      stream: false,
+      maxToolIters: 16,
+    });
+
+    // Turn 1 — abort mid-flight.
+    let aborted = false;
+    for await (const ev of loop.step("first")) {
+      if (!aborted && ev.role === "tool") {
+        aborted = true;
+        loop.abort();
+      }
+    }
+
+    // Turn 2 — fresh user input; should reach the second model call
+    // and yield its output. If the bug is back, we see iter-0 abort
+    // again and never see "second turn ran cleanly".
+    const turn2Events: { role: string; content?: string }[] = [];
+    for await (const ev of loop.step("second")) {
+      turn2Events.push({ role: ev.role, content: ev.content });
+    }
+
+    const finals = turn2Events.filter((e) => e.role === "assistant_final");
+    expect(finals).toHaveLength(1);
+    expect(finals[0]!.content).toBe("second turn ran cleanly");
+    // No "aborted at iter 0" warning on turn 2.
+    expect(
+      turn2Events.some((e) => e.role === "warning" && /aborted at iter/.test(e.content ?? "")),
+    ).toBe(false);
+  });
+
   it("forces a summary when maxToolIters is exhausted, instead of stopping silently", async () => {
     // Give a registered tool so the repair layer doesn't strip the fake
     // tool_calls for referring to an unknown name.

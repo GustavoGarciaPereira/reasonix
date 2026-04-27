@@ -1,4 +1,5 @@
 import type { WriteStream } from "node:fs";
+import * as pathMod from "node:path";
 import { Box, Static, Text, useApp, useStdout } from "ink";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type AtUrlExpansion, expandAtMentions, expandAtUrls } from "../../at-mentions.js";
@@ -40,6 +41,7 @@ import { formatCommandResult, runCommand } from "../../tools/shell.js";
 import { registerSkillTools } from "../../tools/skills.js";
 import { formatSubagentResult, spawnSubagent } from "../../tools/subagent.js";
 import { webFetch } from "../../tools/web.js";
+import { registerWorkspaceTool } from "../../tools/workspace.js";
 import { openTranscriptFile, recordFromLoopEvent, writeRecord } from "../../transcript.js";
 import { appendUsage } from "../../usage.js";
 import { AtMentionSuggestions } from "./AtMentionSuggestions.js";
@@ -57,6 +59,7 @@ import { SlashArgPicker } from "./SlashArgPicker.js";
 import { SlashSuggestions } from "./SlashSuggestions.js";
 import { StatsPanel } from "./StatsPanel.js";
 import { WelcomeBanner } from "./WelcomeBanner.js";
+import { WorkspaceConfirm, type WorkspaceConfirmChoice } from "./WorkspaceConfirm.js";
 import { detectBangCommand, formatBangUserMessage } from "./bang.js";
 import {
   describeRepair,
@@ -114,7 +117,17 @@ export interface AppProps {
    * optional `jobs` registry enables /jobs + /kill slashes in the TUI
    * and the status-bar "N jobs running" indicator.
    */
-  codeMode?: { rootDir: string; jobs?: import("../../tools/jobs.js").JobRegistry };
+  codeMode?: {
+    rootDir: string;
+    jobs?: import("../../tools/jobs.js").JobRegistry;
+    /**
+     * `/cwd <path>` callback — re-registers every rootDir-dependent
+     * native tool against the new path. Optional: when omitted the
+     * slash command degrades to updating hook cwd / memory root only,
+     * with file/shell tools still pointing at the original root.
+     */
+    reregisterTools?: (rootDir: string) => void;
+  };
 }
 
 /**
@@ -281,17 +294,23 @@ export function App({
   // summary). Rendered as a dim spinner row; auto-cleared on the next
   // primary event.
   const [statusLine, setStatusLine] = useState<string | null>(null);
+  // Live working directory for every rootDir-dependent surface:
+  // hook cwd, memory root, project shell allowlist root, `@file`
+  // mention root, `applyEditBlocks` base, run_command cwd, project-
+  // settings hook loader. `/cwd <path>` mutates this state to swap
+  // the workspace mid-session; the prop `codeMode.rootDir` stays as
+  // the original launch root so it can't accidentally drift (it's
+  // used purely for "is this a code-mode session?" checks now).
+  const [currentRootDir, setCurrentRootDir] = useState<string>(
+    () => codeMode?.rootDir ?? process.cwd(),
+  );
   // Loaded user hooks (project + global settings.json). Stays mutable
-  // so `/hooks reload` can rescan disk without reconstructing the
-  // loop. The loop holds a parallel reference for its tool-event
-  // dispatch; we keep them in sync via the effect below.
+  // so `/hooks reload` and `/cwd` can rescan disk without
+  // reconstructing the loop. The loop holds a parallel reference for
+  // its tool-event dispatch; we keep them in sync via the effect below.
   const [hookList, setHookList] = useState<ResolvedHook[]>(() =>
     loadHooks({ projectRoot: codeMode?.rootDir }),
   );
-  // Working directory reported in every hook's stdin payload. Hook
-  // scripts that `cd $REASONIX_CWD` (or read `cwd` from the JSON
-  // envelope) land in the project root, not the user's shell home.
-  const hookCwd = codeMode?.rootDir ?? process.cwd();
   // Session-scoped edit history + undo banner + /undo, /history, /show
   // handlers. Kept in a custom hook so App.tsx only sees the small API
   // it needs — append an edit, arm the banner, answer the slash
@@ -389,6 +408,13 @@ export function App({
      */
     kind: "run_command" | "run_background";
   } | null>(null);
+  // The latest `change_workspace` request awaiting user approval.
+  // Populated from the WorkspaceConfirmationError surfaced in the
+  // tool result; cleared once the user picks Switch / Deny in
+  // WorkspaceConfirm. Mutually exclusive with pendingShell — only
+  // one modal can be open at a time, and we gate input + render on
+  // both flags wherever pendingShell is gated.
+  const [pendingWorkspace, setPendingWorkspace] = useState<{ path: string } | null>(null);
   // Plan text the model submitted via `submit_plan` while plan mode
   // was active. Non-null renders PlanConfirm; user picks Approve /
   // Refine / Cancel and we drive the loop from there. Separate from
@@ -592,13 +618,14 @@ export function App({
   }, []);
 
   const loopRef = useRef<CacheFirstLoop | null>(null);
-  // hookList + hookCwd intentionally NOT in deps — they seed the loop
-  // on first construction (loopRef guards a single instantiation), and
-  // later edits flow in through the mutable `loop.hooks = hookList`
-  // effect below. Putting them in deps would tear down the loop on
-  // every reload, wiping the append-only log mid-session.
+  // hookList + currentRootDir intentionally NOT in deps — they seed
+  // the loop on first construction (loopRef guards a single
+  // instantiation), and later edits flow in through the mutable
+  // `loop.hooks = hookList` / `loop.hookCwd = currentRootDir` effects
+  // below. Putting them in deps would tear down the loop on every
+  // reload, wiping the append-only log mid-session.
   // biome-ignore lint/correctness/useExhaustiveDependencies: hookList — see comment above
-  // biome-ignore lint/correctness/useExhaustiveDependencies: hookCwd — see comment above
+  // biome-ignore lint/correctness/useExhaustiveDependencies: currentRootDir — see comment above
   const loop = useMemo(() => {
     if (loopRef.current) return loopRef.current;
     const client = new DeepSeekClient();
@@ -634,6 +661,16 @@ export function App({
         },
       });
     }
+    // `change_workspace` — model-callable workspace switching, gated
+    // on a confirmation modal driven by App.tsx (see pendingWorkspace
+    // state below). Tool fn validates the path and throws
+    // WorkspaceConfirmationError; the actual swap happens when the
+    // user approves. Registered here (not in code.tsx) so chat-mode
+    // sessions also expose it — `setCwd` works in chat mode too,
+    // just doesn't have a tool sandbox to re-register.
+    if (tools && !tools.has("change_workspace")) {
+      registerWorkspaceTool(tools);
+    }
     const prefix = new ImmutablePrefix({
       system,
       toolSpecs: tools?.specs(),
@@ -647,7 +684,7 @@ export function App({
       branch,
       session,
       hooks: hookList,
-      hookCwd,
+      hookCwd: currentRootDir,
       // Restore the user's last-chosen effort cap. Without this a
       // `/effort high` silently reverted to `max` on relaunch — the
       // loop's constructor default wins over persisted state.
@@ -663,6 +700,77 @@ export function App({
   useEffect(() => {
     loop.hooks = hookList;
   }, [loop, hookList]);
+
+  // Shared cwd-switch implementation — drives BOTH the `/cwd` slash
+  // command and the `change_workspace` tool's confirmation handler.
+  // Returns a multi-line info string the caller can surface to the
+  // user (slash) or fold into a synthetic message (tool). Idempotent
+  // on the same path.
+  const applyCwdChange = useCallback(
+    (newRoot: string): string => {
+      // Update the React state — every memoized derivation that reads
+      // `currentRootDir` (memoryRoot, hookCwd via useEffect,
+      // applyEditBlocks paths, mention root, run_command cwd) picks
+      // up the new path on the next render.
+      setCurrentRootDir(newRoot);
+      // Reload hooks against the new project (different
+      // .reasonix/settings.json may exist there).
+      const fresh = loadHooks({ projectRoot: codeMode ? newRoot : undefined });
+      setHookList(fresh);
+      // Re-register every rootDir-dependent native tool so file
+      // reads/writes and shell calls land in the new sandbox. Only
+      // available in code mode (chat mode has no rootDir-bound tools
+      // beyond memory, which we re-register inline below).
+      const codeRebound = codeMode?.reregisterTools !== undefined;
+      if (codeMode?.reregisterTools) {
+        codeMode.reregisterTools(newRoot);
+      }
+      // Keep `run_skill`'s closured projectRoot in sync too. It's
+      // owned by App.tsx (the subagent runner needs in-process refs),
+      // so the codeMode reregister hook above doesn't touch it. Safe
+      // to re-register: the registry overwrites by tool name, the
+      // spec is identical, prefix cache stays.
+      if (tools) {
+        registerSkillTools(tools, {
+          projectRoot: codeMode ? newRoot : undefined,
+          subagentRunner: async (skill, task) => {
+            const result = await spawnSubagent({
+              client: loop.client,
+              parentRegistry: tools,
+              system: skill.body,
+              task,
+              model: skill.model,
+              sink: subagentSinkRef.current,
+              skillName: skill.name,
+            });
+            return formatSubagentResult(result);
+          },
+        });
+      }
+      const lines = [`▸ cwd → ${newRoot}`, `  hooks reloaded (${fresh.length} active)`];
+      if (codeMode) {
+        lines.push(
+          codeRebound
+            ? "  filesystem / shell / memory tools rebound to new root"
+            : "  warning: reregisterTools callback missing — tool sandbox unchanged",
+        );
+        lines.push(
+          "  note: system prompt context (gitignore, REASONIX.md stack) was",
+          "        baked at session start and still references the original root.",
+        );
+      }
+      return lines.join("\n");
+    },
+    [codeMode, loop, tools, subagentSinkRef],
+  );
+
+  // Mirror `currentRootDir` into the loop's mutable `hookCwd` so
+  // `/cwd` switches the path threaded into every hook's stdin
+  // envelope without reconstructing the loop. Same shape as the
+  // hookList sync above — the loop holds a parallel mutable copy.
+  useEffect(() => {
+    loop.hookCwd = currentRootDir;
+  }, [loop, currentRootDir]);
 
   // Ambient session info (balance, model catalog, latest published
   // version) — three independent mount-time fetches behind one hook
@@ -699,7 +807,14 @@ export function App({
     slashArgSelected,
     setSlashArgSelected,
     pickSlashArg,
-  } = useCompletionPickers({ input, setInput, codeMode, models, mcpServers });
+  } = useCompletionPickers({
+    input,
+    setInput,
+    codeMode,
+    rootDir: currentRootDir,
+    models,
+    mcpServers,
+  });
 
   // Wire the shared progressSink so the bridge's onProgress → us.
   // Only updates progress when the frame belongs to the currently-
@@ -927,6 +1042,7 @@ export function App({
       key.shift &&
       key.tab &&
       !pendingShell &&
+      !pendingWorkspace &&
       !pendingPlan &&
       !stagedInput &&
       !pendingEditReview &&
@@ -966,6 +1082,7 @@ export function App({
       input.length === 0 &&
       (chKey === "u" || chKey === "U") &&
       !pendingShell &&
+      !pendingWorkspace &&
       !pendingPlan &&
       !stagedInput &&
       !pendingEditReview &&
@@ -1122,7 +1239,7 @@ export function App({
         // the queued block is a literal whole-file overwrite. For new
         // files SEARCH stays empty — applyEditBlock's create-new sentinel.
         const content = typeof args.content === "string" ? args.content : "";
-        block = toWholeFileEditBlock(relPath, content, codeMode.rootDir);
+        block = toWholeFileEditBlock(relPath, content, currentRootDir);
       }
 
       // Helper: apply the current block + record into history + arm
@@ -1138,8 +1255,8 @@ export function App({
       // the "result shown twice" bug reported in 0.6 (one dim info
       // row, then a nearly identical tool row directly below).
       const applyNow = (): string => {
-        const snaps = snapshotBeforeEdits([block], codeMode.rootDir);
-        const results = applyEditBlocks([block], codeMode.rootDir);
+        const snaps = snapshotBeforeEdits([block], currentRootDir);
+        const results = applyEditBlocks([block], currentRootDir);
         const good = results.some((r) => r.status === "applied" || r.status === "created");
         if (good) {
           recordEdit("auto", [block], results, snaps);
@@ -1233,8 +1350,8 @@ export function App({
       if (selected.length === 0) {
         return "▸ no edits matched those indices — nothing applied. Use /apply with no args to commit them all.";
       }
-      const snaps = snapshotBeforeEdits(selected, codeMode.rootDir);
-      const results = applyEditBlocks(selected, codeMode.rootDir);
+      const snaps = snapshotBeforeEdits(selected, currentRootDir);
+      const results = applyEditBlocks(selected, currentRootDir);
       const anyApplied = results.some((r) => r.status === "applied" || r.status === "created");
       if (anyApplied) recordEdit("review-apply", selected, results, snaps);
       pendingEdits.current = remaining;
@@ -1247,7 +1364,7 @@ export function App({
           : "";
       return formatEditResults(results) + tail;
     },
-    [codeMode, session, syncPendingCount, recordEdit],
+    [codeMode, currentRootDir, session, syncPendingCount, recordEdit],
   );
 
   /**
@@ -1514,7 +1631,7 @@ export function App({
       const hashParse = detectHashMemory(text);
       if (hashParse?.kind === "memory" || hashParse?.kind === "memory-global") {
         const isGlobal = hashParse.kind === "memory-global";
-        const memRoot = codeMode?.rootDir ?? process.cwd();
+        const memRoot = currentRootDir;
         promptHistory.current.push(text);
         try {
           const result = isGlobal
@@ -1557,7 +1674,7 @@ export function App({
       // happened AND the bang exchange survives session resume.
       const bangCmd = detectBangCommand(text);
       if (bangCmd !== null) {
-        const bangRoot = codeMode?.rootDir ?? process.cwd();
+        const bangRoot = currentRootDir;
         promptHistory.current.push(text);
         setHistorical((prev) => [
           ...prev,
@@ -1627,10 +1744,10 @@ export function App({
           codeDiscard: codeMode ? codeDiscard : undefined,
           codeHistory: codeMode ? codeHistory : undefined,
           codeShowEdit: codeMode ? codeShowEdit : undefined,
-          codeRoot: codeMode?.rootDir,
+          codeRoot: codeMode ? currentRootDir : undefined,
           pendingEditCount: codeMode ? pendingEdits.current.length : undefined,
           toolHistory: () => toolHistoryRef.current,
-          memoryRoot: codeMode?.rootDir ?? process.cwd(),
+          memoryRoot: currentRootDir,
           planMode,
           setPlanMode: codeMode ? togglePlanMode : undefined,
           clearPendingPlan: codeMode ? clearPendingPlan : undefined,
@@ -1655,10 +1772,11 @@ export function App({
               { id: `sys-late-${Date.now()}-${Math.random()}`, role: "info", text },
             ]),
           reloadHooks: () => {
-            const fresh = loadHooks({ projectRoot: codeMode?.rootDir });
+            const fresh = loadHooks({ projectRoot: codeMode ? currentRootDir : undefined });
             setHookList(fresh);
             return fresh.length;
           },
+          setCwd: (newRoot: string) => applyCwdChange(newRoot),
           latestVersion,
           refreshLatestVersion,
           models,
@@ -1764,7 +1882,7 @@ export function App({
       if (hookList.some((h) => h.event === "UserPromptSubmit")) {
         const promptReport = await runHooks({
           hooks: hookList,
-          payload: { event: "UserPromptSubmit", cwd: hookCwd, prompt: text },
+          payload: { event: "UserPromptSubmit", cwd: currentRootDir, prompt: text },
         });
         if (promptReport.outcomes.length > 0) {
           setHistorical((prev) => [
@@ -1870,8 +1988,8 @@ export function App({
       // block; the Historical row above keeps the user's verbatim text
       // so the display doesn't balloon.
       let modelInput = text;
-      if (codeMode?.rootDir) {
-        const expanded = expandAtMentions(text, codeMode.rootDir);
+      if (codeMode) {
+        const expanded = expandAtMentions(text, currentRootDir);
         if (expanded.expansions.length > 0) {
           modelInput = expanded.text;
           const inlined = expanded.expansions
@@ -2046,8 +2164,8 @@ export function App({
               const blocks = parseEditBlocks(finalText);
               if (blocks.length > 0) {
                 if (editModeRef.current === "auto" || editModeRef.current === "yolo") {
-                  const snaps = snapshotBeforeEdits(blocks, codeMode.rootDir);
-                  const results = applyEditBlocks(blocks, codeMode.rootDir);
+                  const snaps = snapshotBeforeEdits(blocks, currentRootDir);
+                  const results = applyEditBlocks(blocks, currentRootDir);
                   const good = results.some(
                     (r) => r.status === "applied" || r.status === "created",
                   );
@@ -2162,6 +2280,34 @@ export function App({
                     command: parsed.command.trim(),
                     kind: ev.toolName as "run_command" | "run_background",
                   });
+                }
+              } catch {
+                /* malformed args — skip the prompt */
+              }
+            }
+            // change_workspace surfaced its WorkspaceConfirmationError —
+            // the resolved absolute path is on the error message between
+            // the `"` markers (`switching to "/abs/path" needs ...`). We
+            // re-derive it from the args rather than parsing the message
+            // so a future error-text rewording doesn't break the modal.
+            if (
+              ev.toolName === "change_workspace" &&
+              ev.content.includes('"WorkspaceConfirmationError:') &&
+              ev.toolArgs
+            ) {
+              try {
+                const parsed = JSON.parse(ev.toolArgs) as { path?: unknown };
+                if (typeof parsed.path === "string" && parsed.path.trim()) {
+                  // Re-resolve the same way the tool fn did so the modal
+                  // shows the canonical destination even when the model
+                  // passed a relative or `~`-prefixed path.
+                  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+                  const expanded =
+                    parsed.path.startsWith("~") && home
+                      ? pathMod.join(home, parsed.path.slice(1))
+                      : parsed.path;
+                  const abs = pathMod.resolve(expanded);
+                  setPendingWorkspace({ path: abs });
                 }
               } catch {
                 /* malformed args — skip the prompt */
@@ -2385,7 +2531,7 @@ export function App({
             hooks: hookList,
             payload: {
               event: "Stop",
-              cwd: hookCwd,
+              cwd: currentRootDir,
               lastAssistantText: streamRef.text,
               turn: loop.stats.summary().turns,
             },
@@ -2426,8 +2572,8 @@ export function App({
       codeMode,
       codeShowEdit,
       codeUndo,
+      currentRootDir,
       exit,
-      hookCwd,
       hookList,
       loop,
       latestVersion,
@@ -2463,6 +2609,7 @@ export function App({
       startLoop,
       getLoopStatus,
       startWalkthrough,
+      applyCwdChange,
     ],
   );
 
@@ -2550,13 +2697,13 @@ export function App({
       } else {
         if (choice === "always_allow") {
           const prefix = derivePrefix(cmd);
-          addProjectShellAllowed(codeMode.rootDir, prefix);
+          addProjectShellAllowed(currentRootDir, prefix);
           setHistorical((prev) => [
             ...prev,
             {
               id: `sh-allow-${Date.now()}`,
               role: "info",
-              text: `▸ always allowed "${prefix}" for ${codeMode.rootDir}`,
+              text: `▸ always allowed "${prefix}" for ${currentRootDir}`,
             },
           ]);
         }
@@ -2577,7 +2724,7 @@ export function App({
           let jobId: number | null = null;
           let preview = "";
           try {
-            const res = await codeMode.jobs.start(cmd, { cwd: codeMode.rootDir });
+            const res = await codeMode.jobs.start(cmd, { cwd: currentRootDir });
             startedOk = true;
             jobId = res.jobId;
             preview = res.preview;
@@ -2606,7 +2753,7 @@ export function App({
           // Foreground (run_command) — synchronous; waits for exit.
           let body: string;
           try {
-            const res = await runCommand(cmd, { cwd: codeMode.rootDir });
+            const res = await runCommand(cmd, { cwd: currentRootDir });
             body = formatCommandResult(cmd, res);
           } catch (err) {
             body = `$ ${cmd}\n[failed to spawn] ${(err as Error).message}`;
@@ -2630,7 +2777,7 @@ export function App({
         await handleSubmit(synthetic);
       }
     },
-    [pendingShell, codeMode, handleSubmit, busy, loop],
+    [pendingShell, codeMode, currentRootDir, handleSubmit, busy, loop],
   );
 
   // Drain the shell-confirm queue after the in-flight turn tears down.
@@ -2643,6 +2790,56 @@ export function App({
       void handleSubmit(text);
     }
   }, [busy, queuedSubmit, handleSubmit]);
+
+  /**
+   * WorkspaceConfirm callback. Two outcomes, both ending with a
+   * synthetic user message so the model sees what happened on its
+   * next turn:
+   *   - deny → tell the model the user refused, continue without it.
+   *   - switch → call applyCwdChange (same path as `/cwd`), surface
+   *     the cwd-change info row to scrollback, hand the model a
+   *     short confirmation so it can resume the user's request
+   *     against the new sandbox.
+   */
+  const handleWorkspaceConfirm = useCallback(
+    async (choice: WorkspaceConfirmChoice) => {
+      const pending = pendingWorkspace;
+      if (!pending) return;
+      const target = pending.path;
+      setPendingWorkspace(null);
+
+      let synthetic: string;
+      if (choice === "deny") {
+        setHistorical((prev) => [
+          ...prev,
+          {
+            id: `ws-deny-${Date.now()}`,
+            role: "info",
+            text: `▸ denied workspace switch: ${target}`,
+          },
+        ]);
+        synthetic = `I denied switching the workspace to \`${target}\`. Please continue without changing directories.`;
+      } else {
+        const info = applyCwdChange(target);
+        setHistorical((prev) => [
+          ...prev,
+          { id: `ws-switch-${Date.now()}`, role: "info", text: info },
+        ]);
+        synthetic = `I approved the workspace switch. The session is now rooted at \`${target}\` — your filesystem / shell / memory tools resolve against that path on every subsequent call. Continue with my original request from this new root.`;
+      }
+
+      // Same race protection as handleShellConfirm: if the prior
+      // turn is still streaming, abort it and queue the synthetic
+      // for the busy=false edge detector below.
+      if (busy) {
+        loop.abort();
+        setQueuedSubmit(synthetic);
+      } else {
+        await handleSubmit(synthetic);
+      }
+    },
+    [pendingWorkspace, applyCwdChange, busy, loop, handleSubmit],
+  );
 
   /**
    * PlanConfirm callback. Three outcomes, all ending with a synthetic
@@ -3045,6 +3242,7 @@ export function App({
           isResizing ||
           !!pendingPlan ||
           !!pendingShell ||
+          !!pendingWorkspace ||
           !!pendingEditReview ||
           walkthroughActive ||
           !!pendingCheckpoint ||
@@ -3071,7 +3269,7 @@ export function App({
             escalated={turnOnPro}
           />
           <Static items={historical}>
-            {(item) => <EventRow key={item.id} event={item} projectRoot={hookCwd} />}
+            {(item) => <EventRow key={item.id} event={item} projectRoot={currentRootDir} />}
           </Static>
           {/*
           Welcome card on the empty state. Visible only when nothing
@@ -3093,6 +3291,7 @@ export function App({
         */}
           {!PLAIN_UI &&
           !pendingShell &&
+          !pendingWorkspace &&
           !pendingPlan &&
           !stagedInput &&
           !pendingEditReview &&
@@ -3100,11 +3299,12 @@ export function App({
           !stagedCheckpointRevise &&
           streaming ? (
             <Box marginY={1}>
-              <EventRow event={streaming} projectRoot={hookCwd} />
+              <EventRow event={streaming} projectRoot={currentRootDir} />
             </Box>
           ) : null}
           {!PLAIN_UI &&
           !pendingShell &&
+          !pendingWorkspace &&
           !pendingPlan &&
           !stagedInput &&
           !pendingEditReview &&
@@ -3115,6 +3315,7 @@ export function App({
           ) : null}
           {!PLAIN_UI &&
           !pendingShell &&
+          !pendingWorkspace &&
           !pendingPlan &&
           !stagedInput &&
           !pendingEditReview &&
@@ -3125,6 +3326,7 @@ export function App({
           ) : null}
           {!PLAIN_UI &&
           !pendingShell &&
+          !pendingWorkspace &&
           !pendingPlan &&
           !stagedInput &&
           !pendingEditReview &&
@@ -3137,6 +3339,7 @@ export function App({
           {!PLAIN_UI &&
           undoBanner &&
           !pendingShell &&
+          !pendingWorkspace &&
           !pendingPlan &&
           !stagedInput &&
           !pendingEditReview &&
@@ -3157,6 +3360,7 @@ export function App({
         */}
           {!PLAIN_UI &&
           !pendingShell &&
+          !pendingWorkspace &&
           !pendingPlan &&
           !stagedInput &&
           !pendingEditReview &&
@@ -3219,7 +3423,7 @@ export function App({
               steps={planStepsRef.current ?? undefined}
               summary={planSummaryRef.current ?? undefined}
               onChoose={stableHandlePlanConfirm}
-              projectRoot={hookCwd}
+              projectRoot={currentRootDir}
             />
           ) : pendingShell ? (
             <ShellConfirm
@@ -3227,6 +3431,13 @@ export function App({
               allowPrefix={derivePrefix(pendingShell.command)}
               kind={pendingShell.kind}
               onChoose={handleShellConfirm}
+            />
+          ) : pendingWorkspace ? (
+            <WorkspaceConfirm
+              path={pendingWorkspace.path}
+              currentRoot={currentRootDir}
+              mcpServerCount={mcpServers?.length ?? 0}
+              onChoose={handleWorkspaceConfirm}
             />
           ) : pendingEditReview ? (
             <EditConfirm

@@ -3,7 +3,96 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.11.0] — 2026-04-27
+## [0.11.1] — 2026-04-27
+
+**Headline:** Workspace-switching, end to end. Four real-use bugs
+that all hit the same scenario — `Esc` poisoned the next turn,
+Chinese-Windows shell errors came back as mojibake, the markdown
+renderer ate `\TEST` out of `F:\TEST1`, and the model had no idea
+how to change directories. Plus two new ways to do it: `/cwd <path>`
+the user types, and `change_workspace` the model calls (always
+gated on an explicit confirmation modal — no auto-switching).
+
+### Fixed
+
+- **`Esc` poisoned the next turn.** The loop's user-Esc abort branch
+  processed the cancel correctly but left `_turnAbort` in an aborted
+  state on its way out. The carry-abort logic at `step()` entry then
+  re-aborted at iter 0 on every subsequent turn, so the user typed
+  a fresh prompt and saw "stopped without producing a summary"
+  before any model call ran. The session was effectively dead until
+  restart. Fix: reset `_turnAbort` to a fresh controller before
+  returning from the abort branch — the across-turn race that the
+  carry logic guards against still works because a new `abort()`
+  fired between turns aborts the new controller. Regression test
+  added (`tests/loop.test.ts`).
+- **Mojibake on Chinese / Japanese / Korean Windows shell errors.**
+  `runCommand` decoded child output as UTF-8 incrementally per
+  chunk. Two failure modes:
+  1. `cmd.exe`'s OWN error messages (e.g. "'sed' is not recognized
+     as an internal or external command") come from a localized
+     resource DLL and ignore `chcp 65001`, so on Chinese Windows
+     the bytes are CP936/GBK and decoded as UTF-8 produced
+     unreadable garbage.
+  2. Multi-byte sequences could split across chunk boundaries and
+     corrupt before the second half arrived.
+  Fix: collect raw `Buffer[]` chunks and decode once at close via
+  a new `smartDecodeOutput` — strict UTF-8 first; on Windows fall
+  back to GB18030 (GBK superset) when UTF-8 rejects the bytes;
+  last resort lossy UTF-8 keeps the structural exit-code marker
+  intact. PowerShell's existing `injectPowerShellUtf8` prelude
+  still covers the PS path; this fixes the path where the model
+  invokes a native EXE directly (`run_command sed …`).
+- **Markdown renderer ate `\TEST` out of `F:\TEST1`.** `stripMath`'s
+  catch-all LaTeX command stripper (`\\[a-zA-Z]+` → `""`) deleted any
+  backslash-followed-by-letters sequence — fine for an invented
+  `\textbf{…}` the model emitted, catastrophic for Windows paths in
+  prose. `F:\TEST1` rendered as `F:1`. Fix: gate the entire
+  `stripMath` pipeline on a math-marker pre-check (`$`, `\(`, `\[`,
+  known LaTeX commands, `^{…}`/`_{…}`, Pandoc super/subscripts). When
+  none are present we return the string untouched. Mixed inputs (a
+  path AND real math in the same message) still run the pipeline —
+  math correctness wins over path preservation in that rare collision.
+- **Model didn't know `/cwd` existed.** When asked to switch to a
+  project on another drive, the model fumbled with `pwd`,
+  `cd /d F:\TEST1`, and `2>&1` shell tricks (none of which work —
+  `cd` doesn't carry across `run_command` calls and `2>&1` is rejected
+  as a shell operator by design). The code-mode system prompt now has
+  a "When the user wants to switch project / working directory"
+  section telling the model to surface `/cwd <path>` once and stop,
+  instead of trying to do it itself.
+
+### Added
+
+- **`change_workspace` tool** — model-callable workspace switching,
+  gated on a confirmation modal. The tool fn validates the target,
+  resolves it (absolute / `~`-expanded / relative-to-launch-cwd), then
+  always throws a `WorkspaceConfirmationError` with the absolute
+  path. App.tsx detects the marker and mounts a Switch / Deny modal;
+  on approval it calls the same `applyCwdChange` path that drives
+  `/cwd` (re-registers filesystem / shell / memory tools, reloads
+  hooks, syncs the loop's hookCwd). On denial the model gets a
+  synthetic "user refused, continue without it" message. No
+  "always allow" option — workspace switches are per-target by
+  nature. The code-mode system prompt now tells the model to call
+  this tool (rather than fumble with `cd /d`) when the user asks
+  to change projects, and to STOP after the call instead of chaining
+  more tools before the user has confirmed.
+- **`/cwd <path>`** — switch the session's working directory mid-
+  session. Validates the target (must exist, must be a directory),
+  expands `~`, then atomically: updates the hook cwd, memory root,
+  project shell allowlist, `@file` mention root, and re-registers
+  filesystem / shell / memory / `run_skill` tools against the new
+  path so file reads, edits, and shell commands all land in the
+  new sandbox. MCP servers stay anchored to the original cwd
+  (their stdio child was spawned with the launch root and there's
+  no standard reconnect handshake) — the slash output flags this
+  explicitly when MCP servers are present. The system prompt's
+  gitignore-aware project tour is also frozen at launch so the
+  prefix cache stays valid; the slash output notes it for users
+  switching to a structurally different project.
+
+
 
 **Headline:** Local semantic search lands as an opt-in pillar — Ollama-
 backed embedding index, `reasonix index` CLI with progress spinner, a

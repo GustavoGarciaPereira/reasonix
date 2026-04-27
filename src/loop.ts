@@ -294,8 +294,12 @@ export class CacheFirstLoop {
    * tool call is one array length check.
    */
   hooks: ResolvedHook[];
-  /** `cwd` reported to hook stdin. Resolved once at construction. */
-  readonly hookCwd: string;
+  /**
+   * `cwd` reported to hook stdin. Mutable so `/cwd` can switch the
+   * working directory mid-session — the App keeps it in sync with
+   * the same currentRootDir that drives tool re-registration.
+   */
+  hookCwd: string;
 
   /** Number of messages that were pre-loaded from the session file. */
   readonly resumedMessageCount: number;
@@ -937,6 +941,17 @@ export class CacheFirstLoop {
         };
         this.autoCompactToolResultsOnTurnEnd();
         yield { turn: this._turn, role: "done", content: stoppedMsg };
+        // Reset to a fresh, non-aborted controller before returning.
+        // Without this the carry-abort logic above sees the still-
+        // aborted controller on the NEXT step() entry and immediately
+        // re-aborts at iter 0, locking the session: every subsequent
+        // user message produces "stopped without producing a summary"
+        // before any work happens. A user-initiated Esc is a discrete
+        // event tied to ONE turn; it must not bleed into the next.
+        // (The race scenario the carry-abort handles — abort fired in
+        // the async window before step() entry — still works: a fresh
+        // abort() between turns aborts the new controller below.)
+        this._turnAbort = new AbortController();
         return;
       }
       // Bridge the silence between the PREVIOUS iter's tool result and

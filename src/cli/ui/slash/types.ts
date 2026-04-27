@@ -175,6 +175,16 @@ export interface SlashContext {
    */
   reloadHooks?: () => number;
   /**
+   * Switch the session working directory. Called by `/cwd <path>`.
+   * Updates the hook cwd, memory root, project shell allowlist root,
+   * `@file` mention root, and (in code mode) re-registers filesystem /
+   * shell / memory / skill tools against the new path. Returns a
+   * human-readable info line describing what changed; throws on
+   * validation errors so the handler can surface the message.
+   * Absent → `/cwd` replies "not available in this context".
+   */
+  setCwd?: (path: string) => string;
+  /**
    * Latest published version if App's background registry check
    * has completed, `null` otherwise (still in flight OR offline).
    * Drives `/update` — the slash shows whatever the async check

@@ -1,3 +1,5 @@
+import { existsSync, statSync } from "node:fs";
+import * as pathMod from "node:path";
 import {
   HOOK_EVENTS,
   type HookEvent,
@@ -150,9 +152,69 @@ const stats: SlashHandler = () => {
   return { info: renderDashboard(agg, path) };
 };
 
+/**
+ * `/cwd <path>` — switch the session working directory mid-session.
+ * Validates the target (must exist, must be a directory), normalizes
+ * to an absolute path with `~` expansion, then defers the actual swap
+ * to the App-supplied `setCwd` callback. The callback updates hook
+ * cwd, memory root, project shell allowlist root, `@file` mention
+ * root, and (in code mode) re-registers filesystem / shell / memory /
+ * skill tools — see App.tsx for the wiring.
+ *
+ * MCP servers do NOT follow the cwd switch — their stdio child was
+ * spawned with the original cwd at session start, and there's no
+ * standard "reconnect with new cwd" handshake. The handler surfaces
+ * a one-line warning when MCP servers are present so users aren't
+ * surprised by tools still resolving paths against the old root.
+ */
+const cwd: SlashHandler = (args, _loop, ctx) => {
+  if (!ctx.setCwd) {
+    return {
+      info: "/cwd is not available in this context (no setCwd callback wired).",
+    };
+  }
+  const raw = (args[0] ?? "").trim();
+  if (!raw) {
+    return {
+      info: "usage: /cwd <path>   (absolute or relative, ~ expands to home)",
+    };
+  }
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  const expanded = raw.startsWith("~") && home ? pathMod.join(home, raw.slice(1)) : raw;
+  const abs = pathMod.resolve(expanded);
+  if (!existsSync(abs)) {
+    return { info: `▸ /cwd: path does not exist — ${abs}` };
+  }
+  let isDir = false;
+  try {
+    isDir = statSync(abs).isDirectory();
+  } catch {
+    // Permission denied or transient FS error — treat as not-a-dir
+    // and let the user see the exact path so they can investigate.
+  }
+  if (!isDir) {
+    return { info: `▸ /cwd: not a directory — ${abs}` };
+  }
+  let info: string;
+  try {
+    info = ctx.setCwd(abs);
+  } catch (err) {
+    return { info: `▸ /cwd failed: ${(err as Error).message}` };
+  }
+  const lines = [info];
+  if (ctx.mcpServers && ctx.mcpServers.length > 0) {
+    lines.push(
+      `  note: ${ctx.mcpServers.length} MCP server(s) still anchored to the original cwd —`,
+      "        their tools won't follow this switch. Restart the session for full reset.",
+    );
+  }
+  return { info: lines.join("\n") };
+};
+
 export const handlers: Record<string, SlashHandler> = {
   hook: hooks,
   hooks,
+  cwd,
   update,
   stats,
 };

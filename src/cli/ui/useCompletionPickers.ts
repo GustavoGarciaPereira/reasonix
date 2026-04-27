@@ -17,6 +17,13 @@ export interface UseCompletionPickersParams {
   input: string;
   setInput: (v: string) => void;
   codeMode: { rootDir: string } | undefined;
+  /**
+   * Live working directory for the @-mention file picker. May differ
+   * from `codeMode.rootDir` after a `/cwd` switch — `codeMode` keeps
+   * the launch root for "is this a code-mode session?" checks while
+   * this drives the actual file listing.
+   */
+  rootDir: string;
   models: string[] | null;
   mcpServers: McpServerSummary[] | undefined;
 }
@@ -57,6 +64,7 @@ export function useCompletionPickers({
   input,
   setInput,
   codeMode,
+  rootDir,
   models,
   mcpServers,
 }: UseCompletionPickersParams): UseCompletionPickersResult {
@@ -81,13 +89,13 @@ export function useCompletionPickers({
   // created mid-session via tool edits won't appear until restart —
   // rare, and the user can always type the full path.
   const atFiles = useMemo<readonly FileWithStats[]>(() => {
-    if (!codeMode?.rootDir) return [];
+    if (!codeMode) return [];
     try {
-      return listFilesWithStatsSync(codeMode.rootDir, { maxResults: 500 });
+      return listFilesWithStatsSync(rootDir, { maxResults: 500 });
     } catch {
       return [];
     }
-  }, [codeMode?.rootDir]);
+  }, [codeMode, rootDir]);
   // LRU of files touched by recent tool calls. Seeds the picker with
   // "stuff I just looked at" at the top, so a user typing `@` in the
   // same file they were just discussing gets it instantly.
@@ -100,12 +108,12 @@ export function useCompletionPickers({
     if (list.length > 20) list.length = 20;
   }, []);
   const atPicker = useMemo(() => {
-    if (!codeMode?.rootDir) return null;
+    if (!codeMode) return null;
     // Slash prefix wins — avoids the picker confusingly surfacing on
     // `/@wat`-style edge inputs.
     if (slashMatches !== null) return null;
     return detectAtPicker(input);
-  }, [codeMode?.rootDir, input, slashMatches]);
+  }, [codeMode, input, slashMatches]);
   const atMatches = useMemo<readonly string[] | null>(() => {
     if (!atPicker) return null;
     return rankPickerCandidates(atFiles, atPicker.query, {
